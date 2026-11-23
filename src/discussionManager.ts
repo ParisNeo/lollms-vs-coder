@@ -199,6 +199,10 @@ export class DiscussionManager {
             gitAutoWorkflow: false,
             includeGitInfo: config.get<boolean>('git.includeGitInfo') ?? false,
             autoApply: false,
+            autoExecuteScouting: false,
+            autoExecuteCode: false,
+            requireExplicitEndTag: false,
+            autoMaxRounds: 12,
             autoFix: true,
             autoBranch: false,
             maxFixRetries: 3,
@@ -305,6 +309,7 @@ export class DiscussionManager {
     }
 
     private saveMutex: Promise<void> = Promise.resolve();
+    private _refreshDiscussionsTimer?: NodeJS.Timeout;
 
     async saveDiscussion(discussion: Discussion): Promise<void> {
         if (discussion.id.startsWith('temp-') || discussion.id.startsWith('remote-')) return;
@@ -313,7 +318,13 @@ export class DiscussionManager {
             this.saveLastMutedFiles(discussion.mutedFiles).catch(() => {});
         }
 
-        this._onDidChangeDiscussions.fire();
+        if (this._refreshDiscussionsTimer) {
+            clearTimeout(this._refreshDiscussionsTimer);
+        }
+        this._refreshDiscussionsTimer = setTimeout(() => {
+            this._refreshDiscussionsTimer = undefined;
+            this._onDidChangeDiscussions.fire();
+        }, 350);
 
         this.saveMutex = this.saveMutex.then(async () => {
             // Keep final librarian reports persistent in discussion history while filtering ephemeral loading spinners

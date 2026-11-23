@@ -31,7 +31,7 @@ import { projectMemoryPlugin } from './plugins/projectMemoryPlugin.js';
 import { milestonePlugin } from './plugins/milestonePlugin.js';
 import { processingPlugin } from './plugins/processingPlugin.js';
 import { formPlugin, parseAndRenderFormContent } from './plugins/formPlugin.js';
-import { fileOpPlugin, fileMutationPlugin, unpackDirectoryPlugin, peekFilesPlugin, loadStructurePlugin, showSymbolPlugin, runTestsPlugin, readExternalFilePlugin } from './plugins/fileOpPlugin.js';
+import { fileOpPlugin, fileMutationPlugin, unpackDirectoryPlugin, peekFilesPlugin, loadStructurePlugin, showSymbolPlugin, runTestsPlugin, readExternalFilePlugin, executeCodePlugin } from './plugins/fileOpPlugin.js';
 import { breakpointPlugin } from './plugins/breakpointPlugin.js';
 import { imageAssetPlugin } from './plugins/imageAssetPlugin.js';
 import { imageGenPlugin } from './plugins/imageGenPlugin.js';
@@ -54,6 +54,7 @@ export function ensurePluginsInitialized() {
     pluginRegistry.length = 0;
     const allPlugins = [
         thinkPlugin,
+        fileMutationPlugin,
         loadKnowledgePlugin,
         updateKnowledgePlugin,
         contextExpansionPlugin,
@@ -62,13 +63,13 @@ export function ensurePluginsInitialized() {
         processingPlugin,
         formPlugin,
         fileOpPlugin,
-        fileMutationPlugin,
         unpackDirectoryPlugin,
         peekFilesPlugin,
         loadStructurePlugin,
         showSymbolPlugin,
         runTestsPlugin,
         readExternalFilePlugin,
+        executeCodePlugin,
         breakpointPlugin,
         imageAssetPlugin,
         imageGenPlugin,
@@ -267,7 +268,7 @@ try {
 
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
 const SANITIZE_CONFIG = {
-    ADD_TAGS: ['iframe', 'script', 'style', 'button', 'i', 'span', 'details', 'summary', 'b', 'strong', 'code', 'pre', 'ul', 'ol', 'li', 'div'],
+    ADD_TAGS: ['iframe', 'script', 'style', 'button', 'i', 'span', 'details', 'summary', 'b', 'strong', 'code', 'pre', 'ul', 'ol', 'li', 'div', 'input', 'textarea', 'select', 'option', 'label'],
     ADD_ATTR: [
         'target', 'allow', 'allowfullscreen', 'frameborder', 'scrolling', 
         'onclick', 'data-value', 'data-type', 'data-message-id', 'data-pid',
@@ -275,6 +276,7 @@ const SANITIZE_CONFIG = {
         'data-content', 'data-importance', 'data-mem-id', 'data-path', 'data-symbol',
         'data-block-index', 'data-raw-code', 'data-lang', 'data-hunk-index', 'data-idx', 'data-closed',
         'data-base', 'data-label', 'data-branch', 'data-files-count', 'data-raw-instruction', 'data-title',
+        'data-start-ms', 'data-form-id', 'data-group', 'type', 'name', 'value', 'checked', 'placeholder', 'selected', 'rows',
         'open', 'style'
     ],
     // IMPORTANT: Allow all classes for our custom UI blocks
@@ -1128,15 +1130,31 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
     const fileRanges = fileBlocks.map(b => ({ start: b.start, end: b.end }));
 
     const thinkRanges: { start: number, end: number }[] = [];
-    const thinkRegex = /<(?:think|thinking|thought|analysis|reasoning)\b[^>]*>[\s\S]*?(?:<\/(?:think|thinking|thought|analysis|reasoning)>|$)/gi;
+    const thinkRegex = /<(think|thinking|thought|analysis|reasoning)\b[^>]*>[\s\S]*?(?:<\/\1>|$)/gi;
     let tm: RegExpExecArray | null;
     while ((tm = thinkRegex.exec(content)) !== null) {
         thinkRanges.push({ start: tm.index, end: tm.index + tm[0].length });
     }
 
+    const processingBlockRanges: { start: number, end: number }[] = [];
+    const procRegex = /<details\b[^>]*class=["'][^"']*processing-block[^"']*["'][^>]*>[\s\S]*?(?:<\/details>|$)/gi;
+    let pm: RegExpExecArray | null;
+    while ((pm = procRegex.exec(content)) !== null) {
+        processingBlockRanges.push({ start: pm.index, end: pm.index + pm[0].length });
+    }
+
+    const execCodeRanges: { start: number, end: number }[] = [];
+    const execRegex = /<(execute_code|lollms_tool)\b[^>]*>[\s\S]*?(?:<\/\1>|$)/gi;
+    let em: RegExpExecArray | null;
+    while ((em = execRegex.exec(content)) !== null) {
+        execCodeRanges.push({ start: em.index, end: em.index + em[0].length });
+    }
+
     const isProtectedOffset = (offset: number) => {
         return fileRanges.some(r => offset >= r.start && offset < r.end) ||
-               thinkRanges.some(r => offset >= r.start && offset < r.end);
+               thinkRanges.some(r => offset >= r.start && offset < r.end) ||
+               processingBlockRanges.some(r => offset >= r.start && offset < r.end) ||
+               execCodeRanges.some(r => offset >= r.start && offset < r.end);
     };
 
     const isSearchMarker = (l: string) => /^<{7}\s*search\b/i.test(l.trim());
@@ -2602,7 +2620,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     // 1. RETAIN IN-PLACE SEQUENTIAL CONTENT (Thoughts are parsed in-place as chronological segments)
     let mainProcessedContent = normalizePseudoFileBlocks(sourceText);
     mainProcessedContent = mainProcessedContent.replace(
-        /(<\/(?:add_files_to_context|remove_files_from_context|unpack_directory|peek_files|file|project_memory|skill|load_structure|read_definitions|show_symbol)>)([^\r\n\s<])/gi,
+        /(<\/(?:add_files_to_context|remove_files_from_context|unpack_directory|peek_files|file|project_memory|skill|load_structure|read_definitions|show_symbol|execute_code|lollms_tool|lollms_form|mute_files|unmute_files|manage_symbols|query_architecture|sparql|run_tests|read_external_file|grep|user_instruction|mission_briefing|delete_files|details)>)([^\r\n\s<])/gi,
         '$1\n\n$2'
     );
 
@@ -2632,10 +2650,52 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         return;
     }
 
-    // 2. EXTRACT VALID LINE-START XML TAG PLUGINS (FIRST-CLASS MUTATIONS & WIDGETS)
+    // 2. EXTRACT VALID XML TAG PLUGINS (WITH FENCE, THINK, AND PROCESSING-BLOCK ISOLATION)
     const segments: MessageSegment[] = [];
     const ctx: PluginContext = { messageId, isFinal, capabilities: state.capabilities, vscode };
     let mutationTagIndex = 0;
+
+    // Precompute protected ranges so markdown fences, inline code, <think>, and processing-blocks do not corrupt each other
+    const protectedCodeRanges: { start: number; end: number }[] = [];
+    const fenceProtectRegex = /```([a-zA-Z0-9_\-]*)[ \t]*\r?\n([\s\S]*?)(?:```|$)|`[^`\r\n]+`/g;
+    const toolFenceTagRe = /^(?:add_files_to_context|remove_files_from_context|mute_files|unmute_files|load_knowledge|update_knowledge|unpack_directory|load_structure|read_definitions|show_symbol|get_symbol_code|read_symbol|peek_files|read_full_file|read_file|read_external_file|grep|grep_search|search_files|manage_symbols|query_architecture|sparql|run_tests|lollms_tool|execute_code|lollms_form)\b/i;
+    let fpMatch: RegExpExecArray | null;
+    while ((fpMatch = fenceProtectRegex.exec(mainProcessedContent)) !== null) {
+        if (fpMatch[0].startsWith('```')) {
+            const langHint = (fpMatch[1] || '').toLowerCase();
+            const innerTrim = (fpMatch[2] || '').trim();
+            const isToolWrapper = (!langHint || ['xml', 'tool', 'tools', 'sparql'].includes(langHint)) &&
+                innerTrim.startsWith('<') &&
+                toolFenceTagRe.test(innerTrim.substring(1));
+            if (isToolWrapper) continue;
+        }
+        protectedCodeRanges.push({ start: fpMatch.index, end: fpMatch.index + fpMatch[0].length });
+    }
+
+    const protectedThinkRanges: { start: number; end: number }[] = [];
+    const thinkBlockRe = /<(think|thinking|thought|analysis|reasoning)\b[^>]*>[\s\S]*?(?:<\/\1>|$)/gi;
+    let tbMatch: RegExpExecArray | null;
+    while ((tbMatch = thinkBlockRe.exec(mainProcessedContent)) !== null) {
+        const isInsideCode = protectedCodeRanges.some(r => tbMatch!.index >= r.start && tbMatch!.index < r.end);
+        if (!isInsideCode) {
+            protectedThinkRanges.push({ start: tbMatch.index, end: tbMatch.index + tbMatch[0].length });
+        }
+    }
+
+    const protectedProcessingRanges: { start: number; end: number }[] = [];
+    const procBlockRe = /<details\b[^>]*class=["'][^"']*processing-block[^"']*["'][^>]*>[\s\S]*?(?:<\/details>|$)/gi;
+    let pbMatch: RegExpExecArray | null;
+    while ((pbMatch = procBlockRe.exec(mainProcessedContent)) !== null) {
+        const isInsideCode = protectedCodeRanges.some(r => pbMatch!.index >= r.start && pbMatch!.index < r.end);
+        if (!isInsideCode) {
+            protectedProcessingRanges.push({ start: pbMatch.index, end: pbMatch.index + pbMatch[0].length });
+        }
+    }
+
+    const relaxedAutoExecPlugins = new Set([
+        'execute_code', 'lollms_tool', 'run_tests', 'load_structure', 'show_symbol',
+        'read_external_file', 'file_operations', 'context_expansion', 'sparql', 'processing_block'
+    ]);
 
     ensurePluginsInitialized();
 
@@ -2644,6 +2704,11 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         if (plugin.extractBlocks) {
             const extracted = plugin.extractBlocks(mainProcessedContent, ctx);
             extracted.forEach(b => {
+                const isThinkPlugin = plugin.id === 'think' || plugin.id === 'think_tag';
+                const inThink = !isThinkPlugin && protectedThinkRanges.some(r => b.start >= r.start && b.start < r.end);
+                const inProc = plugin.id !== 'processing_block' && protectedProcessingRanges.some(r => b.start >= r.start && b.start < r.end);
+                if (inThink || inProc) return;
+
                 // Bidirectional interval overlap check
                 const isOverlapping = segments.some(s => b.start < s.end && b.end > s.start);
                 if (!isOverlapping && b.html) {
@@ -2666,34 +2731,23 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const matchIndex = pMatch.index;
             const fullMatch = pMatch[0];
 
-            // Strict Line-Start check: verify the tag starts on a clean line (not mid-sentence in prose)
+            const inCode = protectedCodeRanges.some(r => matchIndex >= r.start && matchIndex < r.end);
+            if (inCode) continue;
+
+            const isThinkPlugin = plugin.id === 'think' || plugin.id === 'think_tag';
+            const inThink = !isThinkPlugin && protectedThinkRanges.some(r => matchIndex >= r.start && matchIndex < r.end);
+            if (inThink) continue;
+
+            const inProc = plugin.id !== 'processing_block' && protectedProcessingRanges.some(r => matchIndex >= r.start && matchIndex < r.end);
+            if (inProc) continue;
+
+            // Line-start check: allow clean line start, list bullets, blockquotes, closing tags, or (for auto-exec blocks) sentence/colon prefixes
             const textBefore = mainProcessedContent.substring(0, matchIndex);
             const lineStartIdx = Math.max(textBefore.lastIndexOf('\n'), textBefore.lastIndexOf('\r'));
             const prefixOnLine = lineStartIdx === -1 ? textBefore : textBefore.substring(lineStartIdx + 1);
-            const hasLineStart = prefixOnLine.trim() === '' || />[ \t]*$/.test(prefixOnLine);
-            if (!hasLineStart) continue;
-
-            // Verify clean termination: Either on the same clean line, or closing tag starts its own line
-            const isSelfClosing = fullMatch.trim().endsWith('/>');
-            const hasClosingTag = fullMatch.includes('</');
-            if (!isSelfClosing && hasClosingTag) {
-                const closingTagIndex = matchIndex + fullMatch.lastIndexOf('</');
-                const textBeforeClosing = mainProcessedContent.substring(matchIndex, closingTagIndex);
-                const lastNewline = Math.max(textBeforeClosing.lastIndexOf('\n'), textBeforeClosing.lastIndexOf('\r'));
-
-                if (lastNewline !== -1) {
-                    // Multi-line tag: closing tag must start cleanly on its line
-                    const linePrefix = textBeforeClosing.substring(lastNewline + 1);
-                    if (linePrefix.trim() !== '') continue;
-                } else {
-                    // Single-line tag: nothing should trail after the closing tag on that same line
-                    const matchEnd = matchIndex + fullMatch.length;
-                    const textAfter = mainProcessedContent.substring(matchEnd);
-                    const nextNewline = textAfter.search(/[\r\n]/);
-                    const lineSuffix = nextNewline === -1 ? textAfter : textAfter.substring(0, nextNewline);
-                    if (lineSuffix.trim() !== '') continue;
-                }
-            }
+            const isCleanOrListPrefix = /^[ \t]*(?:(?:[-*+]|\d+\.)[ \t]+|>[ \t]*)?$/.test(prefixOnLine) || />[ \t]*$/.test(prefixOnLine);
+            const isRelaxedAutoPrefix = relaxedAutoExecPlugins.has(plugin.id) && /[:.!?][ \t]*$/.test(prefixOnLine);
+            if (!isCleanOrListPrefix && !isRelaxedAutoPrefix) continue;
 
             // Exclude matching if it overlaps with previously matched plugins
             const isOverlapping = segments.some(s => 
@@ -2714,6 +2768,27 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     plugin
                 });
             }
+        }
+    });
+
+    // Fallback protection: if an unclosed/malformed <think> block wasn't captured by thinkPlugin, wrap it safely so raw tags never leak
+    protectedThinkRanges.forEach((tr, fallbackIdx) => {
+        const covered = segments.some(s => tr.start >= s.start && tr.start < s.end);
+        if (!covered) {
+            const rawSlice = mainProcessedContent.slice(tr.start, tr.end);
+            const inner = rawSlice
+                .replace(/^<(?:think|thinking|thought|analysis|reasoning)\b[^>]*>/i, '')
+                .replace(/<\/(?:think|thinking|thought|analysis|reasoning)>\s*$/i, '')
+                .trim();
+            const safeBody = sanitizer.sanitize(escapeHtml(inner));
+            const cardId = `think-block-fallback-${messageId}-${fallbackIdx}`;
+            const detailsId = `think-details-fallback-${messageId}-${fallbackIdx}`;
+            segments.push({
+                type: 'plugin',
+                content: `<div class="think-block" id="${cardId}" data-closed="${isFinal ? 'true' : 'false'}"><details class="think-details" id="${detailsId}"><summary class="think-summary"><div class="think-summary-left"><i class="codicon codicon-chevron-right think-chevron"></i><span class="think-icon-slot">${isFinal ? '<span class="codicon codicon-circuit-board think-status-icon"></span>' : '<span class="spinner think-spinner"></span>'}</span><span class="thought-title-label">${isFinal ? 'Thought Process' : 'Thinking...'}</span></div><div class="think-summary-right"></div></summary><div class="think-body markdown-body">${safeBody || '...'}</div></details></div>`,
+                start: tr.start,
+                end: tr.end
+            });
         }
     });
 
@@ -2892,7 +2967,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     // Detect Multi-Step updates structure in the current response
     const detectedMultiSteps = detectMultiStepsInContent(sourceText);
 
-    const isAutoExecutionActive = state.capabilities?.autoApply === true || state.capabilities?.agentMode === true || state.capabilities?.dynamicMode === true;
+    const isAutoExecutionActive = state.capabilities?.autoExecuteScouting === true || state.capabilities?.autoExecuteCode === true || state.capabilities?.autoExecuteTools === true || (state.capabilities as any)?.autoMode === true || state.capabilities?.agentMode === true || state.capabilities?.dynamicMode === true;
 
     // Reserve slot for Tools & Actions card; populated strictly from verified rendered DOM cards after parsing
     if (isFinal && !isAutoExecutionActive) {
@@ -2995,7 +3070,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
         // Preserve toggle open/closed states of any active details elements across re-renders
         const preservedOpenStates = new Map<string, boolean>();
-        bodyZone.querySelectorAll('details[id], .plan-scratchpad[id] details, .librarian-compressed-directive').forEach((d: any) => {
+        bodyZone.querySelectorAll('details[id], .think-block[id] details, .plan-scratchpad[id] details, .librarian-compressed-directive').forEach((d: any) => {
             const id = d.id || d.closest('[id]')?.id;
             if (id) preservedOpenStates.set(id, d.open);
         });
@@ -3045,6 +3120,39 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     const oEl = oNode as HTMLElement;
 
                     if (nEl.id && oEl.id && nEl.id === oEl.id) {
+                        // Keep <details>/<summary> intact during streaming so think blocks can be toggled smoothly
+                        if (oEl.classList.contains('think-block') && nEl.classList.contains('think-block')) {
+                            oEl.setAttribute('data-closed', nEl.getAttribute('data-closed') || 'false');
+                            const oTitle = oEl.querySelector('.thought-title-label');
+                            const nTitle = nEl.querySelector('.thought-title-label');
+                            if (oTitle && nTitle && oTitle.textContent !== nTitle.textContent) {
+                                oTitle.textContent = nTitle.textContent;
+                            }
+                            const oIconSlot = oEl.querySelector('.think-icon-slot');
+                            const nIconSlot = nEl.querySelector('.think-icon-slot');
+                            if (oIconSlot && nIconSlot && oIconSlot.innerHTML !== nIconSlot.innerHTML) {
+                                oIconSlot.innerHTML = nIconSlot.innerHTML;
+                            }
+                            const oRight = oEl.querySelector('.think-summary-right') as HTMLElement | null;
+                            const nRight = nEl.querySelector('.think-summary-right') as HTMLElement | null;
+                            if (oRight && nRight) {
+                                const oIsLive = !!oRight.querySelector('.think-duration.is-live');
+                                const nIsLive = !!nRight.querySelector('.think-duration.is-live');
+                                if (oIsLive !== nIsLive || (!nIsLive && oRight.innerHTML !== nRight.innerHTML)) {
+                                    oRight.innerHTML = nRight.innerHTML;
+                                }
+                            }
+                            const oBody = oEl.querySelector('.think-body') as HTMLElement | null;
+                            const nBody = nEl.querySelector('.think-body') as HTMLElement | null;
+                            if (oBody && nBody && oBody.innerHTML !== nBody.innerHTML) {
+                                const wasAtBottom = oBody.scrollHeight - oBody.scrollTop - oBody.clientHeight < 24;
+                                const prevScrollTop = oBody.scrollTop;
+                                oBody.innerHTML = nBody.innerHTML;
+                                oBody.scrollTop = wasAtBottom ? oBody.scrollHeight : prevScrollTop;
+                            }
+                            idx++;
+                            continue;
+                        }
                         // Prevent flickering: If code card is already enhanced and code has not changed, do not wipe innerHTML
                         if (oEl.classList.contains('code-collapsible') || oEl.classList.contains('file-mutation-card')) {
                             const nCode = nEl.getAttribute('data-raw-code') || nEl.dataset.rawCode || '';
@@ -3092,7 +3200,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
         // Restore preserved open states for user-toggled details
         preservedOpenStates.forEach((isOpen, id) => {
-            const target = bodyZone.querySelector(`[id="${id}"] details, details[id="${id}"]`) as HTMLDetailsElement;
+            const safeId = typeof CSS !== 'undefined' && typeof CSS.escape === 'function' ? CSS.escape(id) : id;
+            const target = bodyZone.querySelector(`details#${safeId}, #${safeId} details`) as HTMLDetailsElement;
             if (target) target.open = isOpen;
         });
     }
@@ -3117,7 +3226,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     }
 
     // Highlight only code blocks that have NOT yet been highlighted by Prism
-    contentDiv.querySelectorAll('.plan-scratchpad pre code:not([data-prism-highlighted]), .file-mutation-card pre code:not([data-prism-highlighted]), .code-collapsible pre code:not([data-prism-highlighted]), .processing-block pre code:not([data-prism-highlighted]), .user-instruction-card pre code:not([data-prism-highlighted])').forEach(block => {
+    contentDiv.querySelectorAll('.think-block pre code:not([data-prism-highlighted]), .plan-scratchpad pre code:not([data-prism-highlighted]), .file-mutation-card pre code:not([data-prism-highlighted]), .code-collapsible pre code:not([data-prism-highlighted]), .processing-block pre code:not([data-prism-highlighted]), .user-instruction-card pre code:not([data-prism-highlighted])').forEach(block => {
         Prism.highlightElement(block);
         block.setAttribute('data-prism-highlighted', 'true');
     });
@@ -4095,6 +4204,7 @@ function addChatMessage(message: any, isFinal: boolean = true, isTechnical: bool
     if (model) messageWrapper.dataset.model = model;
     if (personalityName) messageWrapper.dataset.personalityName = personalityName;
     if (message.personalityId) messageWrapper.dataset.personalityId = message.personalityId;
+    if (Array.isArray(message.thinkDurations)) messageWrapper.dataset.thinkDurations = JSON.stringify(message.thinkDurations);
 
     const caps = state.capabilities || { agentMode: false, dynamicMode: false };
     const isAgent = caps.agentMode === true;
@@ -4703,7 +4813,7 @@ export class ContextPresenter {
                     </div>
                 </div>
 
-                <!-- SUB-ROW: Git Branch Selector, Graph Studio, Test & Debug, Fork & Compress, Compress History, and Search Bar -->
+                <!-- SUB-ROW: Git Branch Selector, Graph Studio, Test & Debug, Fork & History Menu, Cross-Project Prompt, and Search Bar -->
                 <div class="hud-secondary-search-bar">
                     <div class="hud-secondary-tools-group">
                         <div id="hud-secondary-git-container"></div>
@@ -4728,13 +4838,30 @@ export class ContextPresenter {
                                 </div>
                             </div>
                         </div>
-                        <button id="hud-header-fork-compress-btn" class="code-action-btn secondary-btn hud-tool-btn" title="Fork discussion with the same files and mute states, compressing history into a clean summary">
-                            <i class="codicon codicon-git-pull-request" style="color: var(--vscode-charts-orange);"></i>
-                            <span>Fork &amp; Compress</span>
-                        </button>
-                        <button id="hud-header-compress-history-btn" class="code-action-btn secondary-btn hud-tool-btn" title="Compress current discussion history in-place to liberate tokens for code files">
-                            <i class="codicon codicon-fold" style="color: var(--vscode-charts-orange);"></i>
-                            <span>Compress History</span>
+                        <div class="badge-wrapper hud-fork-history-wrapper" style="position: relative;">
+                            <button id="hud-fork-history-menu-btn" class="code-action-btn secondary-btn hud-fork-history-trigger hud-tool-btn" title="Discussion Forking &amp; History Compression">
+                                <i class="codicon codicon-repo-forked" style="color: var(--vscode-charts-orange);"></i>
+                                <span>Fork &amp; History</span>
+                                <i class="codicon codicon-chevron-down" style="font-size: 9px; opacity: 0.7;"></i>
+                            </button>
+                            <div id="hud-fork-history-menu" class="custom-menu hidden" style="min-width: 265px; padding: 4px 0;">
+                                <div class="custom-menu-item fork-history-menu-opt" data-action="simple-fork" title="Create a new discussion reusing only the current file selection and mute states (no chat history)">
+                                    <span class="codicon codicon-repo-forked" style="color:var(--vscode-charts-purple)"></span>
+                                    <span>Simple Fork (Files &amp; Mutings Only)</span>
+                                </div>
+                                <div class="custom-menu-item fork-history-menu-opt" data-action="fork-compress" title="Fork discussion with the same files and mute states, compressing history into a clean summary">
+                                    <span class="codicon codicon-git-pull-request" style="color:var(--vscode-charts-orange)"></span>
+                                    <span>Fork &amp; Compress History</span>
+                                </div>
+                                <div class="custom-menu-item fork-history-menu-opt" data-action="compress-history" title="Compress current discussion history in-place to liberate tokens for code files">
+                                    <span class="codicon codicon-fold" style="color:var(--vscode-charts-orange)"></span>
+                                    <span>Compress History (In-Place)</span>
+                                </div>
+                            </div>
+                        </div>
+                        <button id="hud-header-inter-project-btn" class="code-action-btn secondary-btn hud-tool-btn" title="Generate a prompt &amp; technical handoff guide for an AI agent working in another project">
+                            <i class="codicon codicon-references" style="color: var(--vscode-charts-blue);"></i>
+                            <span>Cross-Project Prompt</span>
                         </button>
                     </div>
 
@@ -4789,8 +4916,6 @@ export class ContextPresenter {
                     <div style="display: flex; gap: 8px; align-items: center;">
                         <button id="run-tests-context-btn" class="icon-btn" title="Run Project Tests & Report to AI" style="padding: 2px; color: var(--vscode-charts-green);"><i class="codicon codicon-beaker"></i></button>
                         <button id="refresh-context-btn" class="icon-btn" title="Force refresh context & recalculate bar" style="padding: 2px; color: var(--vscode-charts-blue);"><i class="codicon codicon-sync"></i></button>
-                        <button id="compress-history-context-btn" class="icon-btn" title="Compress Chat History (Summarize earlier turns in-place to free context tokens for files)" style="padding: 2px; color: var(--vscode-charts-orange);"><i class="codicon codicon-fold"></i></button>
-                        <button id="fork-compress-context-btn" class="icon-btn" title="Fork &amp; Compress Discussion (New discussion with same files and compressed history summary)" style="padding: 2px; color: var(--vscode-charts-orange);"><i class="codicon codicon-git-pull-request"></i></button>
                         <select id="hud-selections-dropdown" ${finalSelections.length === 0 ? 'disabled' : ''} style="background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); font-size: 11px; padding: 2px 6px; border-radius: 4px; cursor: ${finalSelections.length === 0 ? 'default' : 'pointer'}; height: 22px; max-width: 150px; outline: none; display: inline-block; opacity: ${finalSelections.length === 0 ? '0.5' : '1'};">
                             <option value="">${finalSelections.length > 0 ? '📁 Select Saved Context...' : '📁 No Saved Contexts'}</option>
                             ${finalSelections.map((s: string) => `<option value="${s}">${s.replace('.lollms-ctx', '')}</option>`).join('')}
@@ -4798,7 +4923,6 @@ export class ContextPresenter {
                         <button id="save-context-btn" class="icon-btn" title="Save file selection" style="padding: 2px;"><i class="codicon codicon-save"></i></button>
                         <button id="load-context-btn" class="icon-btn" title="Load Context (Replace Selection)" style="padding: 2px;"><i class="codicon codicon-folder-opened"></i></button>
                         <button id="add-context-btn" class="icon-btn" title="Add Context (Append to Selection)" style="padding: 2px; color: var(--vscode-charts-green);"><i class="codicon codicon-folder-active"></i></button>
-                        <button id="new-discussion-context-header-btn" class="icon-btn" title="New Discussion with Same Files & Mute States" style="padding: 2px; color: var(--vscode-charts-purple);"><i class="codicon codicon-repo-forked"></i></button>
                         <button id="reset-context-bubble-btn" class="icon-btn" title="Full Context Reset" style="padding: 2px; color: var(--vscode-errorForeground);"><i class="codicon codicon-clear-all"></i></button>
                     </div>
                 </div>
@@ -4829,25 +4953,6 @@ export class ContextPresenter {
                         </div>
                     </div>
 
-                    <!-- 🔀 STANDALONE CONTEXT & DISCUSSION OPERATIONS SECTION -->
-                    <div class="hud-context-operations-bar" style="margin-bottom: 8px; padding: 6px 10px; background: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-widget-border); border-radius: 6px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px;">
-                        <div style="display: flex; align-items: center; gap: 6px;">
-                            <span style="font-size: 10px; font-weight: 700; text-transform: uppercase; opacity: 0.8; display: flex; align-items: center; gap: 4px;">
-                                <i class="codicon codicon-repo-forked" style="color: var(--vscode-charts-purple);"></i> Discussion Operations
-                            </span>
-                        </div>
-                        <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
-                            <button id="new-discussion-same-files-btn" class="section-bulk-btn" style="border-color: var(--vscode-charts-purple); color: var(--vscode-charts-purple); font-weight: 600;" title="Start a new discussion with the exact same files and muted states">
-                                <span class="codicon codicon-repo-forked"></span> Fork Chat
-                            </button>
-                            <button id="fork-and-compress-btn" class="section-bulk-btn" style="border-color: var(--vscode-charts-orange); color: var(--vscode-charts-orange); font-weight: 600;" title="Fork discussion with same files and mute states, compressing history into user summary + AI acknowledgement">
-                                <span class="codicon codicon-git-pull-request"></span> Fork &amp; Compress
-                            </button>
-                            <button id="compress-history-btn" class="section-bulk-btn" style="border-color: var(--vscode-charts-orange); color: var(--vscode-charts-orange); font-weight: 600;" title="Compress current discussion history in-place to liberate tokens for code files">
-                                <span class="codicon codicon-fold"></span> Compress History
-                            </button>
-                        </div>
-                    </div>
 
                     <details class="info-collapsible briefing-details" style="margin-bottom: 8px; border-left: 4px solid var(--vscode-charts-purple);">
                         <summary>
@@ -5689,31 +5794,49 @@ export class ContextBinder {
             });
         }
 
-        const headerForkCompressBtn = dashboard.querySelector('#hud-header-fork-compress-btn') as HTMLElement;
-        if (headerForkCompressBtn) {
-            headerForkCompressBtn.onclick = (e) => {
+        // Fork & History Compression Menu Binding
+        const forkHistoryBadge = dashboard.querySelector('#hud-fork-history-menu-btn') as HTMLElement;
+        const forkHistoryMenu = dashboard.querySelector('#hud-fork-history-menu') as HTMLElement;
+        if (forkHistoryBadge && forkHistoryMenu) {
+            forkHistoryBadge.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                vscode.postMessage({ command: 'forkAndCompressDiscussion' });
+                const isOpening = !forkHistoryMenu.classList.contains('visible');
+                document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
+                if (isOpening) {
+                    const adjustFn = (window as any).adjustMenuPosition || ((trig: HTMLElement, mn: HTMLElement) => {
+                        mn.style.top = '100%';
+                        mn.style.bottom = 'auto';
+                    });
+                    adjustFn(forkHistoryBadge, forkHistoryMenu);
+                    forkHistoryMenu.classList.add('visible');
+                }
             };
+
+            forkHistoryMenu.querySelectorAll('.fork-history-menu-opt').forEach((item: any) => {
+                item.onclick = (e: MouseEvent) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const action = item.dataset.action;
+                    forkHistoryMenu.classList.remove('visible');
+                    if (action === 'simple-fork') {
+                        vscode.postMessage({ command: 'newDiscussionWithSameContext' });
+                    } else if (action === 'fork-compress') {
+                        vscode.postMessage({ command: 'forkAndCompressDiscussion' });
+                    } else if (action === 'compress-history') {
+                        import('./ui.js').then(ui => ui.setCalculatingTokens(true, "Compressing chat history..."));
+                        vscode.postMessage({ command: 'compressDiscussionHistory' });
+                    }
+                };
+            });
         }
 
-        const headerCompressHistBtn = dashboard.querySelector('#hud-header-compress-history-btn') as HTMLElement;
-        if (headerCompressHistBtn) {
-            headerCompressHistBtn.onclick = (e) => {
+        const headerInterProjectBtn = dashboard.querySelector('#hud-header-inter-project-btn') as HTMLElement;
+        if (headerInterProjectBtn) {
+            headerInterProjectBtn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                import('./ui.js').then(ui => ui.setCalculatingTokens(true, "Compressing chat history..."));
-                vscode.postMessage({ command: 'compressDiscussionHistory' });
-            };
-        }
-
-        const forkCompressContextBtn = dashboard.querySelector('#fork-compress-context-btn') as HTMLElement;
-        if (forkCompressContextBtn) {
-            forkCompressContextBtn.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                vscode.postMessage({ command: 'forkAndCompressDiscussion' });
+                import('./ui.js').then(ui => ui.openInterProjectPromptModal());
             };
         }
 
@@ -6856,53 +6979,7 @@ export class ContextBinder {
             if (el) el.onclick = (e) => { e.stopPropagation(); action(); };
         };
 
-        const forkBtn = dashboard.querySelector('#new-discussion-same-files-btn') as HTMLElement;
-        if (forkBtn) {
-            forkBtn.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                vscode.postMessage({ command: 'newDiscussionWithSameContext' });
-            };
-        }
 
-        const bindTrigger = (selector: string, action: () => void) => {
-            const el = dashboard.querySelector(selector) as HTMLElement;
-            if (el) {
-                el.onclick = (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    action();
-                };
-            }
-        };
-
-        bindTrigger('#hud-header-fork-compress-btn', () => vscode.postMessage({ command: 'forkAndCompressDiscussion' }));
-        bindTrigger('#fork-compress-context-btn', () => vscode.postMessage({ command: 'forkAndCompressDiscussion' }));
-        bindTrigger('#fork-and-compress-btn', () => vscode.postMessage({ command: 'forkAndCompressDiscussion' }));
-
-        bindTrigger('#hud-header-compress-history-btn', () => {
-            import('./ui.js').then(ui => ui.setCalculatingTokens(true, "Compressing chat history..."));
-            vscode.postMessage({ command: 'compressDiscussionHistory' });
-        });
-        bindTrigger('#compress-history-context-btn', () => {
-            import('./ui.js').then(ui => ui.setCalculatingTokens(true, "Compressing chat history..."));
-            vscode.postMessage({ command: 'compressDiscussionHistory' });
-        });
-        bindTrigger('#compress-history-btn', () => {
-            import('./ui.js').then(ui => ui.setCalculatingTokens(true, "Compressing chat history..."));
-            vscode.postMessage({ command: 'compressDiscussionHistory' });
-        });
-
-        const iconForkBtn = dashboard.querySelector('#new-chat-same-context-icon-btn') as HTMLElement;
-        if (iconForkBtn) {
-            iconForkBtn.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                vscode.postMessage({ command: 'newDiscussionWithSameContext' });
-            };
-        }
-
-        bindClick('new-discussion-context-header-btn', () => vscode.postMessage({ command: 'newDiscussionWithSameContext' }));
 
         bindClick('refresh-context-btn', () => vscode.postMessage({ command: 'calculateTokens', force: true }));
         bindClick('save-context-btn', () => vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'saveContext', params: {} } }));
@@ -9033,11 +9110,24 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
         fixBtn.onclick = (e: MouseEvent) => {
             e.preventDefault();
             e.stopPropagation();
+            if (fixBtn!.dataset.requesting === 'true') return;
             const currentFailed = getPatchesForMessage(messageId).filter(p => !p.isApplied && (failedMap[p.id] || (p.hunkIndex !== undefined && failedMap[`${p.blockIndex}-full`])));
             if (currentFailed.length === 0) return;
 
+            fixBtn!.dataset.requesting = 'true';
             fixBtn!.disabled = true;
             fixBtn!.innerHTML = '<div class="spinner" style="border-color: rgba(255,255,255,0.35); border-top-color: #ffffff;"></div> Requesting Fix...';
+
+            const prevTimer = (fixBtn as any)._fixTimeoutId;
+            if (prevTimer) clearTimeout(prevTimer);
+            (fixBtn as any)._fixTimeoutId = setTimeout(() => {
+                if (fixBtn && fixBtn.dataset.requesting === 'true') {
+                    delete fixBtn.dataset.requesting;
+                    (fixBtn as any)._fixTimeoutId = undefined;
+                    checkAndSyncMessageAppliedState(messageId);
+                }
+            }, 15000);
+
             vscode.postMessage({
                 command: 'requestFixFailedHunks',
                 messageId,

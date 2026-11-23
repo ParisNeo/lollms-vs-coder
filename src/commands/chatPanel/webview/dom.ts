@@ -86,6 +86,11 @@ export interface DiscussionCapabilities {
     autoBranch: boolean;
     maxFixRetries: number;
     autoApply: boolean;
+    allowCodeExecution?: boolean;
+    autoExecuteScouting?: boolean;
+    autoExecuteCode?: boolean;
+    requireExplicitEndTag?: boolean;
+    autoMaxRounds?: number;
     autoSkillMode?: boolean;
     autoToolMode?: boolean;
     disableProjectContext?: boolean;
@@ -156,6 +161,7 @@ export const state: {
     lastCommitHash: string,
     currentPersonalityId: string,
     currentModelName: string,
+    models: any[],
     personalities: any[],
     agentProfiles: any[],
     mutedFiles: string[],
@@ -195,6 +201,7 @@ export const state: {
     lastCommitHash: '',
     currentPersonalityId: 'default_coder',
     currentModelName: 'Loading...',
+    models: [],
     personalities: [],
     agentProfiles: [],
     mutedFiles: [],

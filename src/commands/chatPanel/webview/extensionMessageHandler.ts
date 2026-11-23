@@ -134,15 +134,38 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
                     stream.buffer += message.chunk;
 
-                    // Track thinking start/end timestamps for duration calculation
-                    const containsOpenTag = stream.buffer.includes('<think') || stream.buffer.includes('<thinking') || stream.buffer.includes('<analysis') || stream.buffer.includes('<reasoning');
-                    const containsCloseTag = stream.buffer.includes('</think>') || stream.buffer.includes('</thinking>') || stream.buffer.includes('</analysis>') || stream.buffer.includes('</reasoning>');
+                    // Track per-block thinking start/end timestamps for duration calculation
+                    const scannableForThink = stream.buffer
+                        .replace(/<file\b[^>]*>[\s\S]*?(?:<\/file>|$)/gi, '')
+                        .replace(/```[\s\S]*?(?:```|$)|`[^`\r\n]+`/g, '');
+                    const openThinkCount = (scannableForThink.match(/<(?:think|thinking|thought|analysis|reasoning)\b[^>]*>/gi) || []).length;
+                    const closeThinkCount = (scannableForThink.match(/<\/(?:think|thinking|thought|analysis|reasoning)\s*>/gi) || []).length;
 
-                    if (containsOpenTag && !wrapper.dataset.thinkStartTime) {
-                        wrapper.dataset.thinkStartTime = String(Date.now());
+                    if (!(wrapper as any)._thinkTimings) {
+                        (wrapper as any)._thinkTimings = [] as Array<{ start: number; end?: number }>;
                     }
-                    if (containsCloseTag && !wrapper.dataset.thinkEndTime) {
-                        wrapper.dataset.thinkEndTime = String(Date.now());
+                    const thinkTimings = (wrapper as any)._thinkTimings as Array<{ start: number; end?: number }>;
+                    const nowMs = Date.now();
+
+                    if (closeThinkCount > openThinkCount && thinkTimings.length === 0) {
+                        const inferredStart = parseInt(wrapper.dataset.firstTokenTime || wrapper.dataset.startTime || String(nowMs), 10);
+                        thinkTimings.push({ start: isNaN(inferredStart) ? nowMs : inferredStart, end: nowMs });
+                    } else {
+                        while (thinkTimings.length < openThinkCount) {
+                            thinkTimings.push({ start: nowMs });
+                        }
+                        for (let ti = 0; ti < Math.min(closeThinkCount, thinkTimings.length); ti++) {
+                            if (thinkTimings[ti].end === undefined) {
+                                thinkTimings[ti].end = nowMs;
+                            }
+                        }
+                    }
+
+                    if (thinkTimings.length > 0 && !wrapper.dataset.thinkStartTime) {
+                        wrapper.dataset.thinkStartTime = String(thinkTimings[0].start);
+                    }
+                    if (thinkTimings.length > 0 && thinkTimings[thinkTimings.length - 1].end !== undefined) {
+                        wrapper.dataset.thinkEndTime = String(thinkTimings[thinkTimings.length - 1].end);
                     }
 
                     const messageDiv = wrapper.querySelector('.message') as HTMLElement;
@@ -181,12 +204,27 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                 stats.textContent = stats.textContent?.replace(')', ` | TPS: ${message.tps} t/s)`);
                             }
                         }
-                        // Lock the final think duration
+                        // Lock final think durations across all blocks
+                        const finalNow = Date.now();
+                        const timings = (wrapper as any)._thinkTimings as Array<{ start: number; end?: number }> | undefined;
+                        if (Array.isArray(timings) && timings.length > 0) {
+                            timings.forEach(t => {
+                                if (t.end === undefined) t.end = finalNow;
+                            });
+                            wrapper.dataset.thinkDurations = JSON.stringify(
+                                timings.map(t => Math.max(0, (t.end ?? finalNow) - t.start))
+                            );
+                        } else if (Array.isArray(message.thinkDurations)) {
+                            wrapper.dataset.thinkDurations = JSON.stringify(message.thinkDurations);
+                        }
                         if (wrapper.dataset.thinkStartTime && !wrapper.dataset.thinkEndTime) {
-                            wrapper.dataset.thinkEndTime = String(Date.now());
+                            wrapper.dataset.thinkEndTime = String(finalNow);
                         }
                     }
 
+                    if (message.appliedState && message.id) {
+                        state.appliedState[message.id] = message.appliedState;
+                    }
                     renderMessageContent(message.id, message.fullContent, true);
 
                     // Final single sync pass for all context expansion blocks
@@ -284,6 +322,23 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
                     if (wrapper) {
                         wrapper.remove();
+                    }
+                }
+                break;
+            case 'removeMessages':
+                {
+                    const ids: string[] = Array.isArray(message.messageIds) ? message.messageIds : [];
+                    ids.forEach(id => {
+                        const wrapper = document.querySelector(`.message-wrapper[data-message-id='${id}']`);
+                        if (wrapper) {
+                            wrapper.remove();
+                        }
+                    });
+                    if (dom.welcomeMessage && dom.chatMessagesContainer) {
+                        const remaining = dom.chatMessagesContainer.querySelectorAll('.message-wrapper').length;
+                        if (remaining === 0) {
+                            dom.welcomeMessage.style.display = 'block';
+                        }
                     }
                 }
                 break;
@@ -555,6 +610,16 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     });
                 }
                 break;
+            case 'interProjectPromptChunk':
+                import('./ui.js').then(ui => {
+                    ui.streamInterProjectPromptChunk(message.fullText || '');
+                });
+                break;
+            case 'interProjectPromptResult':
+                import('./ui.js').then(ui => {
+                    ui.handleInterProjectPromptResult(message);
+                });
+                break;
             case 'fileRepairPassResult':
                 {
                     import('./ui.js').then(ui => {
@@ -746,9 +811,33 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
                 }
                 break;
+            case 'fixFailedHunksResult':
+                {
+                    const fixBtn = message.messageId ? document.getElementById(`try-fix-failed-${message.messageId}`) as HTMLButtonElement | null : null;
+                    if (fixBtn) {
+                        if ((fixBtn as any)._fixTimeoutId) {
+                            clearTimeout((fixBtn as any)._fixTimeoutId);
+                            (fixBtn as any)._fixTimeoutId = undefined;
+                        }
+                        delete fixBtn.dataset.requesting;
+                    }
+                    if (message.messageId) {
+                        checkAndSyncMessageAppliedState(message.messageId);
+                    }
+                }
+                break;
             case 'setGeneratingState':
                 // If we are stopping, explicitly ensure overlays are hidden and finalize any pending streams
                 if (!message.isGenerating) {
+                    document.querySelectorAll('.try-fix-failed-btn[data-requesting="true"]').forEach((b: any) => {
+                        if (b._fixTimeoutId) {
+                            clearTimeout(b._fixTimeoutId);
+                            b._fixTimeoutId = undefined;
+                        }
+                        delete b.dataset.requesting;
+                        const msgId = b.id?.replace(/^try-fix-failed-/, '');
+                        if (msgId) checkAndSyncMessageAppliedState(msgId);
+                    });
                     const overlay = document.getElementById('generating-overlay');
                     if (overlay) overlay.style.display = 'none';
                     const input = document.querySelector('.input-area-wrapper') as HTMLElement;
@@ -1710,8 +1799,11 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const autoFixCheck = document.getElementById('cap-autoFix') as HTMLInputElement;
                     if (autoFixCheck) autoFixCheck.checked = caps.autoFix !== false;
 
+                    const isAutoModeVal = caps.autoExecuteTools === true || (caps as any).autoMode === true;
                     const autoApplyCheck = document.getElementById('cap-autoApply') as HTMLInputElement;
-                    if (autoApplyCheck) autoApplyCheck.checked = !!caps.autoApply;
+                    if (autoApplyCheck) autoApplyCheck.checked = isAutoModeVal;
+                    const autoModeCheck = document.getElementById('cap-autoExecuteTools') as HTMLInputElement;
+                    if (autoModeCheck) autoModeCheck.checked = isAutoModeVal;
 
                     if (dom.activeToolsIndicator) {
                         dom.activeToolsIndicator.innerHTML = '';
@@ -1854,12 +1946,26 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const icon = dom.refreshModelsBtn.querySelector('.codicon');
                     if(icon) icon.classList.remove('spin');
                 }
+                {
+                    const wizardRefreshBtn = document.getElementById('wizard-refresh-models-btn') as HTMLButtonElement | null;
+                    if (wizardRefreshBtn) {
+                        const icon = wizardRefreshBtn.querySelector('.codicon');
+                        if (icon) icon.classList.remove('spin');
+                        wizardRefreshBtn.disabled = false;
+                    }
+                }
                 if (message.currentModel) {
                     state.currentModelName = message.currentModel;
                 }
-                if(dom.modelSelector) {
+                const incomingModels = Array.isArray(message.models) ? message.models : [];
+                const existingModels = Array.isArray((state as any).models) ? (state as any).models : [];
+                const models = (incomingModels.length === 0 && message.preserveOnEmpty && existingModels.length > 0)
+                    ? existingModels
+                    : incomingModels;
+                (state as any).models = models;
+
+                if (dom.modelSelector) {
                     dom.modelSelector.innerHTML = '<option value="">Default Model</option>';
-                    const models = message.models || [];
                     const serverGroups = new Map<string, any[]>();
                     models.forEach((m: any) => {
                         const sName = m.server || 'Primary Server';
@@ -1882,11 +1988,16 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         dom.modelSelector.appendChild(optGroup);
                     });
                     dom.modelSelector.value = message.currentModel || '';
-                    (state as any).models = models;
 
                     import('./ui.js').then(ui => {
                         if (typeof (ui as any).populateRepairModelSelect === 'function') {
                             (ui as any).populateRepairModelSelect(models, message.currentModel);
+                        }
+                        if (typeof (ui as any).populateWizardModelSelect === 'function') {
+                            (ui as any).populateWizardModelSelect(models, message.currentModel);
+                        }
+                        if (typeof (ui as any).populateInterProjectModelSelect === 'function') {
+                            (ui as any).populateInterProjectModelSelect(models, message.currentModel);
                         }
                     });
                     
@@ -2113,6 +2224,15 @@ export async function handleExtensionMessage(event: MessageEvent) {
             }
             case 'error':
                 setGeneratingState(false);
+                document.querySelectorAll('.try-fix-failed-btn[data-requesting="true"]').forEach((b: any) => {
+                    if (b._fixTimeoutId) {
+                        clearTimeout(b._fixTimeoutId);
+                        b._fixTimeoutId = undefined;
+                    }
+                    delete b.dataset.requesting;
+                    const msgId = b.id?.replace(/^try-fix-failed-/, '');
+                    if (msgId) checkAndSyncMessageAppliedState(msgId);
+                });
                 // Clear all active spinners in buttons
                 document.querySelectorAll('.apply-btn .spinner').forEach(s => {
                     const btn = s.closest('button');
@@ -3559,11 +3679,12 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         }
 
                         // Reset any active repair buttons in this block
-                        const activeRepairBtn = blockEl.querySelector('.fix-ai-btn, .repairBtn, .row-fix-ai-btn') as HTMLButtonElement;
-                        if (activeRepairBtn) {
+                        blockEl.querySelectorAll('.fix-ai-btn, .hunk-fix-ai-btn, .repairBtn, .row-fix-ai-btn').forEach((activeRepairBtn: any) => {
                             activeRepairBtn.disabled = false;
-                            activeRepairBtn.innerHTML = '<span class="codicon codicon-sparkle"></span> Fix with AI';
-                        }
+                            activeRepairBtn.innerHTML = activeRepairBtn.classList.contains('hunk-fix-ai-btn')
+                                ? '<span class="codicon codicon-sparkle"></span> Fix Hunk'
+                                : '<span class="codicon codicon-sparkle"></span> Fix with AI';
+                        });
 
                         if (mainApplyBtn) {
                             mainApplyBtn.disabled = false;

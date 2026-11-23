@@ -2183,13 +2183,13 @@ export class BadgesBinder {
         const allOptionsList = [
             { label: '🧠 Thinking Mode', icon: 'codicon-circuit-board', key: 'thinkingMode', assistantOnly: false },
             { label: '📚 Librarian Mode', icon: 'codicon-library', key: 'librarianMode', assistantOnly: true },
-            { label: '⚡ Auto-Execute Tools', icon: 'codicon-play', key: 'autoExecuteTools', assistantOnly: true },
+            { label: '💻 Code Issuing', icon: 'codicon-terminal', key: 'allowCodeExecution', assistantOnly: true },
+            { label: '⚡ Auto Mode', icon: 'codicon-zap', key: 'autoExecuteTools', assistantOnly: true },
             { label: '📊 SPARQL Engine', icon: 'codicon-graph', key: 'sparqlEnabled', assistantOnly: false },
             { label: '🔍 GREP Indexer', icon: 'codicon-search', key: 'grepEnabled', assistantOnly: false },
             { label: '🌍 Web Research', icon: 'codicon-globe', key: 'webSearch', assistantOnly: false },
             { label: '🧬 Project DNA', icon: 'codicon-chip', key: 'projectMemoryEnabled', assistantOnly: false },
             { label: '💡 Skills Library', icon: 'codicon-lightbulb', key: 'autoSkillMode', assistantOnly: false },
-            { label: '⚡ Auto-Apply Blocks', icon: 'codicon-zap', key: 'autoApply', assistantOnly: true },
             { label: '🐞 Debug Protocol', icon: 'codicon-bug', key: 'debugMode', assistantOnly: false },
             { label: '🛡️ Verifier Protocol', icon: 'codicon-shield', key: 'verifierMode', assistantOnly: false },
             { label: '🧪 Test Protocol', icon: 'codicon-beaker', key: 'testMode', assistantOnly: false },
@@ -2263,25 +2263,44 @@ export class BadgesBinder {
                 if (key === 'autoExecuteTools') {
                     if (state.capabilities) {
                         state.capabilities.autoExecuteTools = isChecked;
+                        state.capabilities.autoApply = isChecked;
+                        (state.capabilities as any).autoMode = isChecked;
                     }
                     vscode.postMessage({
                         command: 'updateDiscussionCapabilitiesPartial',
-                        partial: { autoExecuteTools: isChecked }
+                        partial: { autoExecuteTools: isChecked, autoApply: isChecked, autoMode: isChecked }
                     });
                     const capInput = document.getElementById('cap-autoExecuteTools') as HTMLInputElement;
                     if (capInput) capInput.checked = isChecked;
+                    const capApply = document.getElementById('cap-autoApply') as HTMLInputElement;
+                    if (capApply) capApply.checked = isChecked;
                     updateBadges();
                     return;
                 }
 
+                const partialUpdate: any = { [key]: isChecked };
                 if (state.capabilities) {
                     (state.capabilities as any)[key] = isChecked;
+                    if (key === 'allowCodeExecution' && !isChecked) {
+                        state.capabilities.autoExecuteCode = false;
+                        partialUpdate.autoExecuteCode = false;
+                        const anyAutoTools = !!(state.capabilities.autoExecuteScouting || state.capabilities.autoExecuteCode);
+                        state.capabilities.autoExecuteTools = anyAutoTools;
+                        (state.capabilities as any).autoMode = anyAutoTools || !!state.capabilities.autoApply || !!state.capabilities.requireExplicitEndTag;
+                        partialUpdate.autoExecuteTools = state.capabilities.autoExecuteTools;
+                        partialUpdate.autoMode = (state.capabilities as any).autoMode;
+                    }
+                } else if (key === 'allowCodeExecution' && !isChecked) {
+                    partialUpdate.autoExecuteCode = false;
                 }
 
                 vscode.postMessage({
                     command: 'updateDiscussionCapabilitiesPartial',
-                    partial: { [key]: isChecked }
+                    partial: partialUpdate
                 });
+                if (key === 'allowCodeExecution') {
+                    updateBadges();
+                }
             };
         });
 
@@ -2584,6 +2603,11 @@ export function updateBadges() {
     }
 
     const caps: any = state.capabilities;
+    const wasModelMenuOpen = document.getElementById('hud-model-menu')?.classList.contains('visible') || false;
+    const wasOptionsMenuOpen = document.getElementById('hud-options-menu')?.classList.contains('visible') || false;
+    const wasAutoMenuOpen = document.getElementById('hud-auto-menu')?.classList.contains('visible') || false;
+    const badgeRenderSeq = ((window as any).__hudBadgeRenderSeq = ((window as any).__hudBadgeRenderSeq || 0) + 1);
+
     container.innerHTML = '';
 
     const isAgentActive = caps.agentMode === true;
@@ -2611,14 +2635,17 @@ export function updateBadges() {
             hasVision: opt.dataset?.hasVision === 'true' || opt.textContent?.includes('👁️')
         })).filter(m => m.id);
 
-    const wasModelMenuOpen = document.getElementById('hud-model-menu')?.classList.contains('visible') || false;
+    const modelSlot = document.createElement('div');
+    modelSlot.style.display = 'contents';
+    infraGroup.appendChild(modelSlot);
 
-    const modelDiv = document.createElement('div');
     import('./messageRenderer.js').then(module => {
-        modelDiv.innerHTML = module.ContextPresenter.renderModelSelectorBadge(currentModelName, modelsList);
-        const badgeWrapper = modelDiv.firstElementChild as HTMLElement;
+        if (badgeRenderSeq !== (window as any).__hudBadgeRenderSeq || !modelSlot.isConnected) return;
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = module.ContextPresenter.renderModelSelectorBadge(currentModelName, modelsList);
+        const badgeWrapper = tempDiv.firstElementChild as HTMLElement;
         module.ContextBinder.bindModelMenu(badgeWrapper, modelsList, currentModelName, wasModelMenuOpen);
-        infraGroup.appendChild(badgeWrapper);
+        modelSlot.replaceChildren(badgeWrapper);
     });
 
     // Render & Bind Personality (GUARANTEED VISIBILITY in top HUD bar)
@@ -2665,70 +2692,283 @@ export function updateBadges() {
     BadgesBinder.bindOperationalModeMenu(operationalModeWrapper, isAssistant, false, isAgent);
     infraGroup.appendChild(operationalModeWrapper);
 
-    // --- 📚 LIBRARIAN & ⚡ AUTO-TOOLS BADGES (Assistant Mode ONLY) ---
+    // --- ⚡ COMPOSABLE AUTOMATION & CODE ISSUING (Assistant Mode ONLY) ---
     if (!isAgent) {
-        const isLibrarian = caps.fastMode === false;
-        const libDiv = document.createElement('div');
-        libDiv.className = 'badge-wrapper';
-        libDiv.innerHTML = `
-            <span id="hud-librarian-badge" class="mode-badge ${isLibrarian ? 'active librarian' : 'inactive'} clickable" style="${isLibrarian ? 'background-color: var(--vscode-charts-orange); color: white; border-color: var(--vscode-charts-orange);' : ''}" title="${isLibrarian ? 'Librarian Mode: ACTIVE (Evaluates dependencies & architecture before coding). Click to switch to Fast Mode.' : 'Librarian Mode: INACTIVE (Fast Mode active). Click to activate Librarian Mode.'}">
-                <span class="codicon codicon-library" style="margin-right: 4px;"></span>
-                <span class="badge-label">${isLibrarian ? '📚 Librarian' : '⚡ Fast Mode'}</span>
-                <span class="badge-toggle-btn codicon ${isLibrarian ? 'codicon-pass-filled' : 'codicon-circle-large-outline'}" style="margin-left: 4px;"></span>
-            </span>
-        `;
-        const libBadge = libDiv.querySelector('#hud-librarian-badge') as HTMLElement;
-        if (libBadge) {
-            libBadge.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const currentFast = state.capabilities?.fastMode !== false;
-                const newFast = !currentFast;
-                const partialUpdate: any = { fastMode: newFast };
-                if (!newFast) {
-                    partialUpdate.contextGovernorEnabled = true;
-                }
-                if (state.capabilities) {
-                    state.capabilities.fastMode = newFast;
-                    if (!newFast) state.capabilities.contextGovernorEnabled = true;
-                }
-                vscode.postMessage({
-                    command: 'updateDiscussionCapabilitiesPartial',
-                    partial: partialUpdate
-                });
-                updateBadges();
-            };
+        const allowCodeExecution = caps.allowCodeExecution === true;
+        const callLibrarian = caps.fastMode === false;
+        const autoApply = caps.autoApply === true;
+        const autoScouting = caps.autoExecuteScouting === true;
+        const autoCode = allowCodeExecution && caps.autoExecuteCode === true;
+        if (!allowCodeExecution && caps.autoExecuteCode === true) {
+            caps.autoExecuteCode = false;
         }
-        infraGroup.appendChild(libDiv);
+        const requireEndTag = caps.requireExplicitEndTag === true;
+        const maxRounds = Math.max(1, Number(caps.autoMaxRounds) || 12);
 
-        const isAutoTools = caps.autoExecuteTools === true;
-        const toolsDiv = document.createElement('div');
-        toolsDiv.className = 'badge-wrapper';
-        toolsDiv.innerHTML = `
-            <span id="hud-auto-tools-badge" class="mode-badge ${isAutoTools ? 'active auto-tools' : 'inactive'} clickable" style="${isAutoTools ? 'background-color: var(--vscode-charts-green); color: white; border-color: var(--vscode-charts-green);' : ''}" title="${isAutoTools ? 'Auto-Execute Tools: ACTIVE (Automatically executes tools and triggers next round). Click to disable.' : 'Auto-Execute Tools: INACTIVE (Manual tool clicking). Click to activate.'}">
-                <span class="codicon ${isAutoTools ? 'codicon-play' : 'codicon-tools'}" style="margin-right: 4px;"></span>
-                <span class="badge-label">${isAutoTools ? '⚡ Auto-Tools' : '🛠️ Manual Tools'}</span>
-                <span class="badge-toggle-btn codicon ${isAutoTools ? 'codicon-pass-filled' : 'codicon-circle-large-outline'}" style="margin-left: 4px;"></span>
+        const activeFlags: string[] = [];
+        if (callLibrarian) activeFlags.push('📚');
+        if (autoApply) activeFlags.push('📝');
+        if (autoScouting) activeFlags.push('🔍');
+        if (autoCode) activeFlags.push('⚡');
+        if (requireEndTag) activeFlags.push('🏁');
+
+        const activeCount = activeFlags.length;
+        const hasAnyAuto = activeCount > 0;
+        const badgeLabel = hasAnyAuto
+            ? `⚡ Auto ${activeFlags.join('')} (${activeCount}/5)`
+            : '🛠️ Manual Mode';
+
+        const codeIssuingBadge = document.createElement('span');
+        codeIssuingBadge.id = 'hud-code-issuing-badge';
+        codeIssuingBadge.className = `mode-badge ${allowCodeExecution ? 'active' : 'inactive'} clickable`;
+        if (allowCodeExecution) {
+            codeIssuingBadge.style.cssText = 'background-color: var(--vscode-charts-blue); color: white; border-color: var(--vscode-charts-blue);';
+        }
+        codeIssuingBadge.title = allowCodeExecution
+            ? 'Code Issuing is ON: LLM is instructed how to emit <execute_code> blocks. Click to turn OFF (also turns off Auto-Execute Code).'
+            : 'Code Issuing is OFF: Code execution prompts are omitted so the LLM will not issue <execute_code> blocks. Click to activate.';
+        codeIssuingBadge.innerHTML = `<span class="codicon codicon-terminal"></span><span class="badge-label">${allowCodeExecution ? 'Code Issuing: ON' : 'Code Issuing: OFF'}</span>`;
+        codeIssuingBadge.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const nextAllow = !allowCodeExecution;
+            const partial: any = { allowCodeExecution: nextAllow };
+            if (!nextAllow) {
+                partial.autoExecuteCode = false;
+            }
+            if (state.capabilities) {
+                state.capabilities.allowCodeExecution = nextAllow;
+                if (!nextAllow) {
+                    state.capabilities.autoExecuteCode = false;
+                }
+                const anyAutoTools = !!(state.capabilities.autoExecuteScouting || state.capabilities.autoExecuteCode);
+                state.capabilities.autoExecuteTools = anyAutoTools;
+                (state.capabilities as any).autoMode = anyAutoTools || !!state.capabilities.autoApply || !!state.capabilities.requireExplicitEndTag;
+                partial.autoExecuteTools = state.capabilities.autoExecuteTools;
+                partial.autoMode = (state.capabilities as any).autoMode;
+            }
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial
+            });
+            updateBadges();
+        };
+        infraGroup.appendChild(codeIssuingBadge);
+
+        const autoWrapper = document.createElement('div');
+        autoWrapper.className = 'badge-wrapper';
+        autoWrapper.style.position = 'relative';
+        autoWrapper.innerHTML = `
+            <span id="hud-auto-menu-badge" class="mode-badge ${hasAnyAuto ? 'active auto-tools' : 'inactive'} clickable" style="${hasAnyAuto ? 'background-color: var(--vscode-charts-green); color: white; border-color: var(--vscode-charts-green);' : ''}" title="Composable Automation Options (${activeCount}/5 active). Click to configure.">
+                <span class="codicon ${hasAnyAuto ? 'codicon-zap' : 'codicon-tools'}" style="margin-right: 4px;"></span>
+                <span class="badge-label">${badgeLabel}</span>
+                <span class="codicon codicon-chevron-down" style="font-size: 9px; opacity: 0.85; margin-left: 3px;"></span>
             </span>
+            <div id="hud-auto-menu" class="custom-menu ${wasAutoMenuOpen ? 'visible' : ''}" style="min-width: 295px; padding: 8px 10px; gap: 6px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; padding-bottom:6px; border-bottom:1px solid var(--vscode-menu-separatorBackground); margin-bottom:2px;">
+                    <span style="font-size:10px; font-weight:800; text-transform:uppercase; opacity:0.75;">Composable Automation</span>
+                    <div style="display:flex; gap:6px;">
+                        <button type="button" id="hud-auto-all-on" style="background:none; border:none; color:var(--vscode-textLink-foreground); font-size:10px; font-weight:700; cursor:pointer; padding:0;">All On</button>
+                        <span style="opacity:0.3;">|</span>
+                        <button type="button" id="hud-auto-all-off" style="background:none; border:none; color:var(--vscode-errorForeground); font-size:10px; font-weight:700; cursor:pointer; padding:0;">All Off</button>
+                    </div>
+                </div>
+                <div class="hud-opt-row hud-auto-opt-row" data-key="callLibrarianFirst" style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:4px 6px; border-radius:4px; font-size:12px; cursor:pointer;" title="Run Lead Librarian scouting & planning before coding">
+                    <span>📚 Call Librarian First</span>
+                    <label class="switch" style="width:28px; height:16px; margin:0; flex-shrink:0; cursor:pointer;">
+                        <input type="checkbox" data-auto-key="callLibrarianFirst" ${callLibrarian ? 'checked' : ''} style="margin:0; cursor:pointer;">
+                        <span class="slider" style="border-radius:16px;"></span>
+                    </label>
+                </div>
+                <div class="hud-opt-row hud-auto-opt-row" data-key="autoApply" style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:4px 6px; border-radius:4px; font-size:12px; cursor:pointer;" title="Automatically apply & fix generated <file> patches">
+                    <span>📝 Auto-Apply Patches</span>
+                    <label class="switch" style="width:28px; height:16px; margin:0; flex-shrink:0; cursor:pointer;">
+                        <input type="checkbox" data-auto-key="autoApply" ${autoApply ? 'checked' : ''} style="margin:0; cursor:pointer;">
+                        <span class="slider" style="border-radius:16px;"></span>
+                    </label>
+                </div>
+                <div class="hud-opt-row hud-auto-opt-row" data-key="autoExecuteScouting" style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:4px 6px; border-radius:4px; font-size:12px; cursor:pointer;" title="Automatically execute grep, show_symbol, load_structure, unmute_files, sparql">
+                    <span>🔍 Auto-Execute Scouting</span>
+                    <label class="switch" style="width:28px; height:16px; margin:0; flex-shrink:0; cursor:pointer;">
+                        <input type="checkbox" data-auto-key="autoExecuteScouting" ${autoScouting ? 'checked' : ''} style="margin:0; cursor:pointer;">
+                        <span class="slider" style="border-radius:16px;"></span>
+                    </label>
+                </div>
+                <div class="hud-opt-row hud-auto-opt-row" data-key="allowCodeExecution" style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:4px 6px; border-radius:4px; font-size:12px; cursor:pointer;" title="Activate system prompts telling the LLM how to issue <execute_code> blocks">
+                    <span>💻 Allow Code Issuing</span>
+                    <label class="switch" style="width:28px; height:16px; margin:0; flex-shrink:0; cursor:pointer;">
+                        <input type="checkbox" data-auto-key="allowCodeExecution" ${allowCodeExecution ? 'checked' : ''} style="margin:0; cursor:pointer;">
+                        <span class="slider" style="border-radius:16px;"></span>
+                    </label>
+                </div>
+                <div class="hud-opt-row hud-auto-opt-row" data-key="autoExecuteCode" style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:4px 6px 4px 18px; border-radius:4px; font-size:12px; cursor:${allowCodeExecution ? 'pointer' : 'not-allowed'}; opacity:${allowCodeExecution ? '1' : '0.45'};" title="${allowCodeExecution ? 'Auto-run <execute_code> blocks and feed stdout/stderr back to AI' : 'Disabled: turn on Allow Code Issuing first'}">
+                    <span>⚡ Auto-Execute Code</span>
+                    <label class="switch" style="width:28px; height:16px; margin:0; flex-shrink:0; cursor:${allowCodeExecution ? 'pointer' : 'not-allowed'};">
+                        <input type="checkbox" data-auto-key="autoExecuteCode" ${autoCode ? 'checked' : ''} ${allowCodeExecution ? '' : 'disabled'} style="margin:0; cursor:${allowCodeExecution ? 'pointer' : 'not-allowed'};">
+                        <span class="slider" style="border-radius:16px;"></span>
+                    </label>
+                </div>
+                <div class="hud-opt-row hud-auto-opt-row" data-key="requireExplicitEndTag" style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:4px 6px; border-radius:4px; font-size:12px; cursor:pointer;" title="Continue reprompting until AI explicitly returns </end> or </done> (up to Max Rounds)">
+                    <span>🏁 Require Explicit End Tag</span>
+                    <label class="switch" style="width:28px; height:16px; margin:0; flex-shrink:0; cursor:pointer;">
+                        <input type="checkbox" data-auto-key="requireExplicitEndTag" ${requireEndTag ? 'checked' : ''} style="margin:0; cursor:pointer;">
+                        <span class="slider" style="border-radius:16px;"></span>
+                    </label>
+                </div>
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 6px 2px 6px; border-top:1px solid var(--vscode-menu-separatorBackground); margin-top:2px; font-size:11px;">
+                    <label for="hud-auto-max-rounds" style="margin:0; font-weight:600; opacity:0.85;">🔄 Max Rounds</label>
+                    <input type="number" id="hud-auto-max-rounds" min="1" max="100" value="${maxRounds}" style="width:56px; height:22px; text-align:center; background:var(--vscode-input-background); color:var(--vscode-input-foreground); border:1px solid var(--vscode-input-border); border-radius:4px; font-size:11px;">
+                </div>
+            </div>
         `;
-        const toolsBadge = toolsDiv.querySelector('#hud-auto-tools-badge') as HTMLElement;
-        if (toolsBadge) {
-            toolsBadge.onclick = (e) => {
+
+        const autoBadge = autoWrapper.querySelector('#hud-auto-menu-badge') as HTMLElement;
+        const autoMenu = autoWrapper.querySelector('#hud-auto-menu') as HTMLElement;
+
+        if (wasAutoMenuOpen && autoBadge && autoMenu) {
+            adjustMenuPosition(autoBadge, autoMenu);
+        }
+
+        if (autoBadge && autoMenu) {
+            autoBadge.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                const currentAuto = state.capabilities?.autoExecuteTools === true;
-                const newAuto = !currentAuto;
-                if (state.capabilities) state.capabilities.autoExecuteTools = newAuto;
-                vscode.postMessage({
-                    command: 'updateDiscussionCapabilitiesPartial',
-                    partial: { autoExecuteTools: newAuto }
-                });
-                const capInput = document.getElementById('cap-autoExecuteTools') as HTMLInputElement;
-                if (capInput) capInput.checked = newAuto;
-                updateBadges();
+                const isOpening = !autoMenu.classList.contains('visible');
+                document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
+                if (isOpening) {
+                    adjustMenuPosition(autoBadge, autoMenu);
+                    autoMenu.classList.add('visible');
+                }
             };
         }
-        infraGroup.appendChild(toolsDiv);
+
+        if (autoMenu) {
+            autoMenu.onclick = (e) => e.stopPropagation();
+
+            const syncLegacyAutoFlags = (nextCaps: any) => {
+                const anyAutoTools = !!(nextCaps.autoExecuteScouting || nextCaps.autoExecuteCode);
+                nextCaps.autoExecuteTools = anyAutoTools;
+                (nextCaps as any).autoMode = anyAutoTools || !!nextCaps.autoApply || !!nextCaps.requireExplicitEndTag;
+            };
+
+            autoMenu.querySelectorAll('.hud-auto-opt-row').forEach((row: any) => {
+                row.onclick = (e: MouseEvent) => {
+                    const target = e.target as HTMLElement;
+                    if (target.tagName === 'INPUT') return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const cb = row.querySelector('input[type="checkbox"]') as HTMLInputElement;
+                    if (cb && !cb.disabled) {
+                        cb.checked = !cb.checked;
+                        cb.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                };
+            });
+
+            autoMenu.querySelectorAll('input[type="checkbox"][data-auto-key]').forEach((cb: any) => {
+                cb.onchange = (e: Event) => {
+                    e.stopPropagation();
+                    const key = cb.dataset.autoKey;
+                    const checked = cb.checked;
+                    const partial: any = {};
+
+                    if (key === 'callLibrarianFirst') {
+                        partial.fastMode = !checked;
+                        if (checked) partial.contextGovernorEnabled = true;
+                        if (state.capabilities) {
+                            state.capabilities.fastMode = !checked;
+                            if (checked) state.capabilities.contextGovernorEnabled = true;
+                        }
+                    } else if (key === 'allowCodeExecution') {
+                        partial.allowCodeExecution = checked;
+                        if (!checked) {
+                            partial.autoExecuteCode = false;
+                        }
+                        if (state.capabilities) {
+                            state.capabilities.allowCodeExecution = checked;
+                            if (!checked) {
+                                state.capabilities.autoExecuteCode = false;
+                            }
+                            syncLegacyAutoFlags(state.capabilities);
+                            partial.autoExecuteTools = state.capabilities.autoExecuteTools;
+                            partial.autoMode = (state.capabilities as any).autoMode;
+                        }
+                    } else if (key === 'autoExecuteCode') {
+                        if (checked && state.capabilities?.allowCodeExecution !== true) {
+                            cb.checked = false;
+                            return;
+                        }
+                        partial.autoExecuteCode = checked;
+                        if (state.capabilities) {
+                            state.capabilities.autoExecuteCode = checked;
+                            syncLegacyAutoFlags(state.capabilities);
+                            partial.autoExecuteTools = state.capabilities.autoExecuteTools;
+                            partial.autoMode = (state.capabilities as any).autoMode;
+                        }
+                    } else {
+                        partial[key] = checked;
+                        if (state.capabilities) {
+                            (state.capabilities as any)[key] = checked;
+                            syncLegacyAutoFlags(state.capabilities);
+                            partial.autoExecuteTools = state.capabilities.autoExecuteTools;
+                            partial.autoMode = (state.capabilities as any).autoMode;
+                        }
+                    }
+
+                    vscode.postMessage({
+                        command: 'updateDiscussionCapabilitiesPartial',
+                        partial
+                    });
+                    updateBadges();
+                };
+            });
+
+            const maxRoundsInput = autoMenu.querySelector('#hud-auto-max-rounds') as HTMLInputElement;
+            if (maxRoundsInput) {
+                maxRoundsInput.onclick = (e) => e.stopPropagation();
+                maxRoundsInput.onchange = (e) => {
+                    e.stopPropagation();
+                    const val = Math.max(1, Math.min(100, parseInt(maxRoundsInput.value, 10) || 12));
+                    maxRoundsInput.value = String(val);
+                    if (state.capabilities) {
+                        state.capabilities.autoMaxRounds = val;
+                    }
+                    vscode.postMessage({
+                        command: 'updateDiscussionCapabilitiesPartial',
+                        partial: { autoMaxRounds: val }
+                    });
+                };
+            }
+
+            const setAllAuto = (enable: boolean) => {
+                const partial: any = {
+                    fastMode: !enable,
+                    allowCodeExecution: enable,
+                    autoApply: enable,
+                    autoExecuteScouting: enable,
+                    autoExecuteCode: enable,
+                    requireExplicitEndTag: enable,
+                    autoExecuteTools: enable,
+                    autoMode: enable
+                };
+                if (enable) partial.contextGovernorEnabled = true;
+                if (state.capabilities) {
+                    Object.assign(state.capabilities, partial);
+                }
+                vscode.postMessage({
+                    command: 'updateDiscussionCapabilitiesPartial',
+                    partial
+                });
+                updateBadges();
+            };
+
+            const allOnBtn = autoMenu.querySelector('#hud-auto-all-on') as HTMLElement;
+            const allOffBtn = autoMenu.querySelector('#hud-auto-all-off') as HTMLElement;
+            if (allOnBtn) allOnBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); setAllAuto(true); };
+            if (allOffBtn) allOffBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); setAllAuto(false); };
+        }
+
+        infraGroup.appendChild(autoWrapper);
     }
 
     // --- AGENT SPECIFIC PROFILE & SECURITY SHIELD BADGES ---
@@ -2755,18 +2995,17 @@ export function updateBadges() {
     }
 
     // --- Auxiliary HUD Options Dropdown Hub (⚙️ 📊 🔍) ---
-    const wasOptionsMenuOpen = document.getElementById('hud-options-menu')?.classList.contains('visible') || false;
 
     const activeIcons: string[] = [];
     if (caps.thinkingMode) activeIcons.push('🧠');
     if (!isAgent && caps.fastMode === false) activeIcons.push('📚');
-    if (!isAgent && caps.autoExecuteTools === true) activeIcons.push('⚡');
+    if (!isAgent && caps.allowCodeExecution === true) activeIcons.push('💻');
+    if (!isAgent && (caps.autoExecuteTools === true || (caps as any).autoMode === true)) activeIcons.push('⚡');
     if (caps.sparqlEnabled !== false) activeIcons.push('📊');
     if (caps.grepEnabled !== false) activeIcons.push('🔍');
     if (caps.webSearch === true) activeIcons.push('🌍');
     if (caps.projectMemoryEnabled !== false) activeIcons.push('🧬');
     if (caps.autoSkillMode === true) activeIcons.push('💡');
-    if (!isAgent && caps.autoApply === true) activeIcons.push('⚡');
     if (caps.debugMode === true) activeIcons.push('🐞');
     if (caps.verifierMode === true) activeIcons.push('🛡️');
     if (caps.testMode === true) activeIcons.push('🧪');
@@ -3514,15 +3753,15 @@ export function renderWebSearchResults(action: string, results: any[]) {
 }
 // Add this inside the updateDiscussionCapabilities logic or as an init listener
 export function initAutomationUI() {
-    const autoApply = document.getElementById('cap-autoApply') as HTMLInputElement;
+    const autoMode = (document.getElementById('cap-autoExecuteTools') || document.getElementById('cap-autoApply')) as HTMLInputElement;
     const subOptions = document.getElementById('automation-sub-options') as HTMLElement;
 
-    if (autoApply && subOptions) {
+    if (autoMode && subOptions) {
         const updateVisibility = () => {
-            subOptions.style.opacity = autoApply.checked ? "1" : "0.5";
-            subOptions.style.pointerEvents = autoApply.checked ? "auto" : "none";
+            subOptions.style.opacity = autoMode.checked ? "1" : "0.5";
+            subOptions.style.pointerEvents = autoMode.checked ? "auto" : "none";
         };
-        autoApply.addEventListener('change', updateVisibility);
+        autoMode.addEventListener('change', updateVisibility);
         updateVisibility(); // Initial state
     }
 }
@@ -5725,6 +5964,60 @@ export function renderWizardFileList(searchQuery?: string) {
 }
 (window as any).renderWizardFileList = renderWizardFileList;
 
+export function populateWizardModelSelect(models?: any[], selectedModel?: string) {
+    const wizardModelSelect = document.getElementById('wizard-model') as HTMLSelectElement | null;
+    if (!wizardModelSelect) return;
+
+    const prevSelected = wizardModelSelect.value;
+    wizardModelSelect.innerHTML = '';
+
+    const modelList = (models && models.length > 0) ? models : ((state as any).models || []);
+    const targetModel = (prevSelected && modelList.some((m: any) => (m.id || m) === prevSelected))
+        ? prevSelected
+        : (selectedModel || state.currentModelName || '');
+
+    if (modelList.length > 0) {
+        const serverGroups = new Map<string, any[]>();
+        modelList.forEach((m: any) => {
+            const sName = (typeof m === 'object' && m.server) ? m.server : 'Primary Server';
+            if (!serverGroups.has(sName)) serverGroups.set(sName, []);
+            serverGroups.get(sName)!.push(m);
+        });
+
+        const appendOption = (parent: HTMLElement, m: any) => {
+            const id = typeof m === 'string' ? m : m.id;
+            if (!id) return;
+            const opt = document.createElement('option');
+            opt.value = id;
+            const hasVision = typeof m === 'object' && m.hasVision ? '👁️ ' : '';
+            const rawName = id.includes('::') ? id.split('::')[1] : id;
+            opt.textContent = `${hasVision}${rawName}`;
+            if (id === targetModel || rawName === targetModel) {
+                opt.selected = true;
+            }
+            parent.appendChild(opt);
+        };
+
+        if (serverGroups.size > 1) {
+            serverGroups.forEach((modelsInServer, serverName) => {
+                const optGroup = document.createElement('optgroup');
+                optGroup.label = `🖥️ ${serverName} (${modelsInServer.length})`;
+                modelsInServer.forEach(m => appendOption(optGroup, m));
+                wizardModelSelect.appendChild(optGroup);
+            });
+        } else {
+            modelList.forEach((m: any) => appendOption(wizardModelSelect, m));
+        }
+    } else {
+        const opt = document.createElement('option');
+        opt.value = targetModel || 'default';
+        opt.textContent = targetModel || 'Default Model';
+        opt.selected = true;
+        wizardModelSelect.appendChild(opt);
+    }
+}
+(window as any).populateWizardModelSelect = populateWizardModelSelect;
+
 export function openNewDiscussionWizard(
     selections: (string | { name: string; fileName: string; fileCount?: number })[] = [],
     initialFiles?: any[],
@@ -5799,27 +6092,14 @@ export function openNewDiscussionWizard(
     vscode.postMessage({ command: 'requestWizardSkills' });
 
     // 0.5 Populate Target Model Select in Wizard
-    const wizardModelSelect = document.getElementById('wizard-model') as HTMLSelectElement;
-    if (wizardModelSelect) {
-        wizardModelSelect.innerHTML = '';
-        const currentModel = state.currentModelName || '';
-        const models = (state as any).models || [];
-
-        if (models.length > 0) {
-            models.forEach((m: any) => {
-                const opt = document.createElement('option');
-                opt.value = m.id;
-                const hasVision = m.hasVision ? '👁️ ' : '';
-                const rawName = m.id.includes('::') ? m.id.split('::')[1] : m.id;
-                opt.textContent = `${hasVision}${rawName}`;
-                if (m.id === currentModel || rawName === currentModel) {
-                    opt.selected = true;
-                }
-                wizardModelSelect.appendChild(opt);
-            });
-        } else {
-            wizardModelSelect.innerHTML = `<option value="${currentModel || 'default'}" selected>${currentModel || 'Default Model'}</option>`;
+    populateWizardModelSelect();
+    if (((state as any).models || []).length === 0) {
+        const refreshBtn = document.getElementById('wizard-refresh-models-btn') as HTMLButtonElement | null;
+        if (refreshBtn) {
+            refreshBtn.querySelector('.codicon')?.classList.add('spin');
+            refreshBtn.disabled = true;
         }
+        vscode.postMessage({ command: 'refreshModels' });
     }
 
     // 0.6 Wire Context Export Buttons in Wizard
@@ -6931,3 +7211,150 @@ function bindStructureEditorEvents() {
         close();
     });
 }
+
+// --- INTER-PROJECT AGENT PROMPT GENERATOR STUDIO ---
+export const interProjectPromptState = {
+    isGenerating: false,
+    generatedText: '',
+    viewMode: 'preview' as 'preview' | 'raw'
+};
+(window as any).interProjectPromptState = interProjectPromptState;
+
+export function populateInterProjectModelSelect(models?: any[], selectedModel?: string) {
+    const select = document.getElementById('inter-project-model-select') as HTMLSelectElement | null;
+    if (!select) return;
+
+    const prevSelected = select.value;
+    const modelList = (models && models.length > 0) ? models : ((state as any).models || []);
+    const targetModel = (prevSelected && modelList.some((m: any) => (m.id || m) === prevSelected))
+        ? prevSelected
+        : (selectedModel || state.currentModelName || '');
+
+    if (modelList.length > 0) {
+        select.innerHTML = modelList.map((m: any) => {
+            const id = typeof m === 'string' ? m : m.id;
+            const rawName = id.includes('::') ? id.split('::')[1] : id;
+            const isMatch = id === targetModel || rawName === targetModel;
+            return `<option value="${id}" ${isMatch ? 'selected' : ''}>${rawName}</option>`;
+        }).join('');
+    } else {
+        select.innerHTML = `<option value="${targetModel || ''}" selected>${targetModel || 'Default Model'}</option>`;
+    }
+}
+(window as any).populateInterProjectModelSelect = populateInterProjectModelSelect;
+
+export function openInterProjectPromptModal() {
+    const modal = document.getElementById('inter-project-prompt-modal');
+    if (!modal) return;
+
+    populateInterProjectModelSelect();
+    if (((state as any).models || []).length === 0) {
+        vscode.postMessage({ command: 'refreshModels' });
+    }
+
+    modal.style.display = 'flex';
+    modal.classList.add('visible');
+
+    setTimeout(() => {
+        (document.getElementById('inter-project-request-input') as HTMLTextAreaElement | null)?.focus();
+    }, 80);
+}
+(window as any).openInterProjectPromptModal = openInterProjectPromptModal;
+
+export function setInterProjectGeneratingState(isGenerating: boolean) {
+    interProjectPromptState.isGenerating = isGenerating;
+    const genBtn = document.getElementById('inter-project-generate-btn') as HTMLButtonElement | null;
+    const statusBadge = document.getElementById('inter-project-status-badge');
+
+    if (genBtn) {
+        if (isGenerating) {
+            genBtn.classList.remove('apply-btn');
+            genBtn.classList.add('delete-btn');
+            genBtn.style.setProperty('background', 'var(--vscode-charts-red)', 'important');
+            genBtn.style.setProperty('color', '#ffffff', 'important');
+            genBtn.innerHTML = '<span class="spinner" style="width:12px; height:12px; border-width:2px; border-color:rgba(255,255,255,0.35); border-top-color:#ffffff;"></span> Stop Generation';
+        } else {
+            genBtn.classList.remove('delete-btn');
+            genBtn.classList.add('apply-btn');
+            genBtn.style.removeProperty('background');
+            genBtn.style.removeProperty('color');
+            genBtn.innerHTML = '<i class="codicon codicon-sparkle"></i> Generate Agent Prompt Document';
+        }
+    }
+
+    if (statusBadge && isGenerating) {
+        statusBadge.textContent = 'Generating...';
+        statusBadge.className = 'file-token-badge weight-medium';
+    }
+}
+(window as any).setInterProjectGeneratingState = setInterProjectGeneratingState;
+
+export function renderInterProjectOutput(text: string) {
+    const previewEl = document.getElementById('inter-project-output-preview');
+    const rawEl = document.getElementById('inter-project-output-raw') as HTMLTextAreaElement | null;
+    const copyBtn = document.getElementById('inter-project-copy-btn') as HTMLButtonElement | null;
+    const saveBtn = document.getElementById('inter-project-save-btn') as HTMLButtonElement | null;
+
+    interProjectPromptState.generatedText = text;
+    const hasText = text.trim().length > 0;
+
+    if (copyBtn) copyBtn.disabled = !hasText;
+    if (saveBtn) saveBtn.disabled = !hasText;
+    if (rawEl && rawEl.value !== text) {
+        rawEl.value = text;
+    }
+
+    if (previewEl) {
+        if (!hasText) {
+            previewEl.innerHTML = `
+                <div style="opacity: 0.6; text-align: center; padding: 40px 20px;">
+                    <i class="codicon codicon-references" style="font-size: 28px; display: block; margin-bottom: 10px; color: var(--vscode-charts-blue);"></i>
+                    Generating comprehensive cross-project prompt document...
+                </div>`;
+        } else {
+            try {
+                previewEl.innerHTML = sanitizer.sanitize((window as any).marked.parse(text) as string);
+            } catch {
+                previewEl.textContent = text;
+            }
+            if (interProjectPromptState.isGenerating) {
+                previewEl.scrollTop = previewEl.scrollHeight;
+            }
+        }
+    }
+}
+
+export function streamInterProjectPromptChunk(fullText: string) {
+    renderInterProjectOutput(fullText);
+}
+(window as any).streamInterProjectPromptChunk = streamInterProjectPromptChunk;
+
+export function handleInterProjectPromptResult(msg: any) {
+    setInterProjectGeneratingState(false);
+    const statusBadge = document.getElementById('inter-project-status-badge');
+
+    if (typeof msg.fullText === 'string' && msg.fullText.trim()) {
+        renderInterProjectOutput(msg.fullText);
+    }
+
+    if (statusBadge) {
+        if (msg.cancelled) {
+            statusBadge.textContent = 'Stopped';
+            statusBadge.className = 'file-token-badge weight-medium';
+        } else if (msg.success) {
+            statusBadge.textContent = 'Document Ready';
+            statusBadge.className = 'file-token-badge weight-light';
+        } else {
+            statusBadge.textContent = 'Error';
+            statusBadge.className = 'file-token-badge weight-heavy';
+        }
+    }
+
+    if (!msg.success && !msg.cancelled && msg.error) {
+        const previewEl = document.getElementById('inter-project-output-preview');
+        if (previewEl && !interProjectPromptState.generatedText.trim()) {
+            previewEl.innerHTML = `<div style="padding: 16px; color: var(--vscode-charts-red); font-weight: 600;">❌ Failed to generate prompt: ${sanitizer.sanitize(msg.error)}</div>`;
+        }
+    }
+}
+(window as any).handleInterProjectPromptResult = handleInterProjectPromptResult;

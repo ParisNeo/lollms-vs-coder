@@ -32,6 +32,8 @@ type DiscussionCapabilities = BaseDiscussionCapabilities & {
     herdRounds?: number;
     monitoredLogPaths?: string[];
     sparqlEnabled?: boolean;
+    contextPruningStrategy?: 'aggressive' | 'balanced' | 'permissive';
+    historyMaxPercent?: number;
     [key: string]: any;
 };
 import * as path from 'path';
@@ -118,7 +120,8 @@ export class ChatPanel {
   private pdfExtractionPromises: Record<string, { resolve: (val: string[]) => void, reject: (err: Error) => void, timeout: NodeJS.Timeout }> = {};
 
   private _activeRepairController: AbortController | null = null;
-  private _diagnosticWatchUris: Set<string> = new Set<string>();
+  private _activeInterProjectController: AbortController | null = null;
+  private _diagnosticWatchUris: Set<string> = new Set();
 
   // Tracks failing patches to prevent infinite repetition loops
   private _failedPatchesRegistry: Map<string, Set<string>> = new Map();
@@ -133,6 +136,7 @@ export class ChatPanel {
       parts: {
           editFiles: string[];
           partInstruction: string;
+          fileModes?: Array<{ path: string; mode: 'full' | 'structure' | 'symbols'; symbols?: string[] }>;
       }[];
   };
 
@@ -260,48 +264,69 @@ export class ChatPanel {
       }
   }
   
-    public async executeAutomationPipeline(content: string, messageId: string, signal: AbortSignal, processId: string) {
+    public async executeAutomationPipeline(
+        content: string,
+        messageId: string,
+        signal: AbortSignal,
+        processId: string,
+        options?: {
+            xmlBlockIndexOffset?: number;
+            fencedBlockIndexOffset?: number;
+            skipContextTools?: boolean;
+            autoFix?: boolean;
+            skipGuardianRepairLoop?: boolean;
+        }
+    ): Promise<{modifiedFiles: string[]; appliedCount: number; failedPatches: Array<{ filePath: string; error: string }> }> {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (!workspaceFolder) return;
+        if (!workspaceFolder) {
+            return { modifiedFiles: [], appliedCount: 0, failedPatches: [] };
+        }
 
         const modifiedFiles = new Set<string>();
-        let blockIndex = 0; // Initialize precise index tracker
+        const failedPatches: Array<{ filePath: string; error: string }> = [];
+        let appliedCount = 0;
+        let xmlLocalIdx = options?.xmlBlockIndexOffset ?? 0;
+        let fencedLocalIdx = options?.fencedBlockIndexOffset ?? 0;
 
-        // 0. Process Mute, Unmute, and Granular Structure/Definitions Tags
+        // 0. Process Mute, Unmute, and Granular Structure/Definitions Tags (unless already handled by the turn tool loop)
         const isFastMode = this._discussionCapabilities.fastMode !== false;
+        const enableAutoFix = options?.autoFix !== undefined ? options.autoFix : (this._discussionCapabilities.autoFix !== false);
+        const isSystemId = messageId.startsWith('self_correction') || messageId.startsWith('guardian') || messageId.startsWith('system') || messageId.startsWith('inspection');
 
-        await this.processStructureTags(content);
+        if (!options?.skipContextTools) {
+            await this.processStructureTags(content);
 
-        const muteRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<mute_files\b[^>]*?>([\s\S]*?)<\/mute_files>/gim;
-        let muteMatch;
-        while ((muteMatch = muteRegex.exec(content)) !== null) {
-            if (signal.aborted) break;
-            const paths = muteMatch[1].split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
-            if (paths.length > 0) {
-                await this.muteFiles(paths);
+            const muteRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<mute_files\b[^>]*?>([\s\S]*?)<\/mute_files>/gim;
+            let muteMatch;
+            while ((muteMatch = muteRegex.exec(content)) !== null) {
+                if (signal.aborted) break;
+                const paths = muteMatch[1].split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+                if (paths.length > 0) {
+                    await this.muteFiles(paths);
+                }
             }
-        }
 
-        const unmuteRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<unmute_files\b[^>]*?>([\s\S]*?)<\/unmute_files>/gim;
-        let unmuteMatch;
-        while ((unmuteMatch = unmuteRegex.exec(content)) !== null) {
-            if (signal.aborted) break;
-            const paths = unmuteMatch[1].split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
-            if (paths.length > 0) {
-                await this.unmuteFiles(paths);
+            const unmuteRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<unmute_files\b[^>]*?>([\s\S]*?)<\/unmute_files>/gim;
+            let unmuteMatch;
+            while ((unmuteMatch = unmuteRegex.exec(content)) !== null) {
+                if (signal.aborted) break;
+                const paths = unmuteMatch[1].split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+                if (paths.length > 0) {
+                    await this.unmuteFiles(paths);
+                }
             }
-        }
 
-        // 0.2. Automatically unmute any muted files requested via add_files_to_context
-        const addContextRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<add_files_to_context\b[^>]*?>([\s\S]*?)<\/add_files_to_context>/gim;
-        let addContextMatch;
-        while ((addContextMatch = addContextRegex.exec(content)) !== null) {
-            if (signal.aborted) break;
-            const paths = addContextMatch[1].split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
-            if (paths.length > 0) {
-                await this.unmuteFiles(paths);
-                if (this._discussionCapabilities.autoApply) {
-                    await this._contextManager.getContextStateProvider()?.addFilesToContext(paths);
+            // 0.2. Automatically unmute any muted files requested via add_files_to_context
+            const addContextRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<add_files_to_context\b[^>]*?>([\s\S]*?)<\/add_files_to_context>/gim;
+            let addContextMatch;
+            while ((addContextMatch = addContextRegex.exec(content)) !== null) {
+                if (signal.aborted) break;
+                const paths = addContextMatch[1].split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+                if (paths.length > 0) {
+                    await this.unmuteFiles(paths);
+                    if (this._discussionCapabilities.autoApply || this._discussionCapabilities.autoExecuteTools) {
+                        await this._contextManager.getContextStateProvider()?.addFilesToContext(paths);
+                    }
                 }
             }
         }
@@ -477,21 +502,28 @@ export class ChatPanel {
         }
 
         // 0.9. Automated Context Verification Shield: Check for Blind Patches
-        const contextVerification = await this.verifyGeneratedPatchContext(content);
-        if (!contextVerification.valid) {
-            this.log(`[Context Verifier] Rejected blind patch on unpossessed files: [${contextVerification.unpossessedFiles.join(', ')}]`, 'WARN');
-            await this.handleContextVerifierFailure(contextVerification.unpossessedFiles, isFastMode, signal, processId);
-            return;
+        if (!options?.skipContextTools) {
+            const contextVerification = await this.verifyGeneratedPatchContext(content);
+            if (!contextVerification.valid) {
+                this.log(`[Context Verifier] Rejected blind patch on unpossessed files: [${contextVerification.unpossessedFiles.join(', ')}]`, 'WARN');
+                await this.handleContextVerifierFailure(contextVerification.unpossessedFiles, isFastMode, signal, processId);
+                return {
+                    modifiedFiles: [],
+                    appliedCount: 0,
+                    failedPatches: contextVerification.unpossessedFiles.map(fp => ({ filePath: fp, error: 'File not loaded in active context [C]' }))
+                };
+            }
         }
 
         // 1. Process XML <file> Mutation Tags (Normalized with pseudo-tag fallback)
-        const { extractFileBlocks, parseFileTagAttributes, normalizePseudoFileBlocks } = require('../../utils');
-        let normalizedContent = normalizePseudoFileBlocks(content);
+        const scannableContent = stripThinkingTags(content);
+        let normalizedContent = normalizePseudoFileBlocks(scannableContent);
         normalizedContent = normalizedContent.replace(/^[ \t]*<delete_code\b([^>]*?)>([\s\S]*?)<\/delete_code>[ \t]*$/gim, (m: string, attrStr: string, body: string) => {
             const attrs = parseFileTagAttributes(attrStr);
             return attrs?.path ? `\n\n<file path="${attrs.path}" action="delete_code">\n${body.trim()}\n</file>\n\n` : m;
         });
         const fileBlocks = extractFileBlocks(normalizedContent);
+        const xmlBlockRanges = fileBlocks.map(b => ({ start: b.start, end: b.end }));
 
         for (const fileBlock of fileBlocks) {
             if (signal.aborted) break;
@@ -505,7 +537,6 @@ export class ChatPanel {
             const action = fileAttrs.action;
             const symbol = fileAttrs.symbol || "";
 
-            const { isProjectFile } = require('../../utils');
             if (!isProjectFile(filePath) || filePath.includes('.lollms/external_files') || (isAgent && AgentSecurityGuard.isProtectedPath(filePath).protected)) {
                 this.log(`[Automation Pipeline] Blocked attempt to modify protected or external file: ${filePath}`, 'WARN');
                 vscode.window.showWarningMessage(`Blocked modification of '${filePath}': Protected or read-only file.`);
@@ -555,82 +586,190 @@ export class ChatPanel {
                 continue;
             }
 
-            const currentBlockIndex = blockIndex++;
+            const currentBlockIndex = xmlLocalIdx++;
+            const blockId = `file-mutation-${messageId}-${currentBlockIndex}`;
             modifiedFiles.add(filePath);
 
-            const isPatch = action === 'patch' || (action !== 'write' && action !== 'update_symbol' && fileBody.includes('<<<<<<< SEARCH'));
+            const isPatch = action === 'patch' || (action !== 'write' && action !== 'update_symbol' && action !== ('delete_code' as any) && fileBody.includes('<<<<<<< SEARCH'));
 
             if ((action as string) === 'delete_code') {
-                const result: any = await vscode.commands.executeCommand('lollms-vs-coder.deleteCodeBlock', filePath, fileBody, { silent: true, autoSave: true, messageId, blockIndex: currentBlockIndex });
+                const result: any = await vscode.commands.executeCommand('lollms-vs-coder.deleteCodeBlock', filePath, fileBody, { silent: true, autoSave: true, messageId, blockIndex: currentBlockIndex, blockId });
                 if (result?.success) {
+                    appliedCount++;
                     await this.updateAppliedState(messageId, currentBlockIndex);
                     this._panel.webview.postMessage({
                         command: 'fileSavedOnDisk',
                         filePath: filePath,
                         messageId: messageId,
-                        blockIndex: currentBlockIndex
+                        blockIndex: currentBlockIndex,
+                        blockId
                     });
-                    this.auditFileDiagnostics(filePath, messageId, currentBlockIndex);
+                    this.auditFileDiagnostics(filePath, messageId, currentBlockIndex, blockId);
+                } else {
+                    const errMsg = result?.error || 'Could not locate code block to delete.';
+                    failedPatches.push({ filePath, error: errMsg });
+                    this._panel.webview.postMessage({
+                        command: 'applyAllResult',
+                        messageId,
+                        filePath,
+                        blockIndex: currentBlockIndex,
+                        blockId,
+                        success: false,
+                        error: errMsg
+                    });
                 }
             } else if (isPatch) {
                 const normalizedAider = normalizeAiderContent(fileBody);
-                const result: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, normalizedAider, this, messageId, { silent: true, autoSave: true, blockIndex: currentBlockIndex });
+                const result: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, normalizedAider, this, messageId, { silent: true, autoSave: true, blockIndex: currentBlockIndex, blockId });
                 if (result?.success) {
+                    appliedCount++;
                     await this.updateAppliedState(messageId, currentBlockIndex);
                     this._panel.webview.postMessage({
                         command: 'fileSavedOnDisk',
                         filePath: filePath,
                         messageId: messageId,
-                        blockIndex: currentBlockIndex
+                        blockIndex: currentBlockIndex,
+                        blockId
                     });
-                    this.auditFileDiagnostics(filePath, messageId, currentBlockIndex);
-                } else if (result?.succeededHunks && result.succeededHunks.length > 0) {
-                    for (const sIdx of result.succeededHunks) {
-                        await this.updateAppliedState(messageId, currentBlockIndex, sIdx);
+                    this.auditFileDiagnostics(filePath, messageId, currentBlockIndex, blockId);
+                } else {
+                    if (result?.succeededHunks && result.succeededHunks.length > 0) {
+                        for (const sIdx of result.succeededHunks) {
+                            await this.updateAppliedState(messageId, currentBlockIndex, sIdx);
+                            this._panel.webview.postMessage({
+                                command: 'applyAllResult',
+                                messageId,
+                                filePath,
+                                blockIndex: currentBlockIndex,
+                                hunkIndex: sIdx,
+                                blockId,
+                                success: true,
+                                alreadyApplied: true
+                            });
+                        }
                     }
-                    this._panel.webview.postMessage({
-                        command: 'fileSavedOnDisk',
-                        filePath: filePath,
-                        messageId: messageId,
-                        blockIndex: currentBlockIndex
-                    });
-                    this.auditFileDiagnostics(filePath, messageId, currentBlockIndex);
+
+                    let failingSnippet = normalizedAider;
+                    if (result?.failedHunks && result.failedHunks.length > 0) {
+                        const parsedHunks = parseAiderHunks(normalizedAider);
+                        const failedSnippets = result.failedHunks
+                            .map((fh: any) => parsedHunks[fh.index]?.fullMatch)
+                            .filter(Boolean);
+                        if (failedSnippets.length > 0) {
+                            failingSnippet = failedSnippets.join('\n\n');
+                        }
+                    }
+
+                    const errMsg = result?.failedHunks?.length
+                        ? result.failedHunks.map((fh: any) => fh.error).join('; ')
+                        : (result?.error || 'Search block mismatch.');
+
+                    let autoFixed = false;
+                    if (enableAutoFix && !isSystemId && !signal.aborted) {
+                        this.log(`Patch failed for ${filePath}. Initiating automated AI self-correction...`, 'WARN');
+                        autoFixed = await this.triggerSurgicalSelfCorrection(filePath, failingSnippet, errMsg, signal, 1);
+                    }
+
+                    if (autoFixed) {
+                        appliedCount++;
+                        await this.updateAppliedState(messageId, currentBlockIndex);
+                        this._panel.webview.postMessage({
+                            command: 'fileSavedOnDisk',
+                            filePath: filePath,
+                            messageId: messageId,
+                            blockIndex: currentBlockIndex,
+                            blockId
+                        });
+                        this.auditFileDiagnostics(filePath, messageId, currentBlockIndex, blockId);
+                    } else {
+                        failedPatches.push({ filePath, error: errMsg });
+                        this._panel.webview.postMessage({
+                            command: 'applyAllResult',
+                            messageId,
+                            filePath,
+                            blockIndex: currentBlockIndex,
+                            blockId,
+                            success: false,
+                            error: errMsg
+                        });
+                    }
                 }
             } else {
                 const targetPath = symbol ? `${filePath}:${symbol}` : filePath;
-                const result: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', targetPath, fileBody, { silent: true, autoSave: true, messageId, blockIndex: currentBlockIndex });
+                const result: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', targetPath, fileBody, { silent: true, autoSave: true, messageId, blockIndex: currentBlockIndex, blockId });
                 if (result?.success) {
+                    appliedCount++;
                     await this.updateAppliedState(messageId, currentBlockIndex);
                     this._panel.webview.postMessage({
                         command: 'fileSavedOnDisk',
                         filePath: filePath,
                         messageId: messageId,
-                        blockIndex: currentBlockIndex
+                        blockIndex: currentBlockIndex,
+                        blockId
                     });
-                    this.auditFileDiagnostics(filePath, messageId, currentBlockIndex);
+                    this.auditFileDiagnostics(filePath, messageId, currentBlockIndex, blockId);
+                } else {
+                    const errMsg = result?.error || `Failed to apply ${symbol ? `symbol ${symbol}` : 'file'} update.`;
+                    let autoFixed = false;
+                    if (symbol && enableAutoFix && !isSystemId && !signal.aborted) {
+                        this.log(`Symbol update failed for ${targetPath}. Initiating automated AI self-correction...`, 'WARN');
+                        autoFixed = await this.triggerSurgicalSelfCorrection(
+                            filePath,
+                            `<file path="${filePath}" action="update_symbol" symbol="${symbol}">\n${fileBody}\n</file>`,
+                            errMsg,
+                            signal,
+                            1
+                        );
+                    }
+
+                    if (autoFixed) {
+                        appliedCount++;
+                        await this.updateAppliedState(messageId, currentBlockIndex);
+                        this._panel.webview.postMessage({
+                            command: 'fileSavedOnDisk',
+                            filePath,
+                            messageId,
+                            blockIndex: currentBlockIndex,
+                            blockId
+                        });
+                        this.auditFileDiagnostics(filePath, messageId, currentBlockIndex, blockId);
+                    } else {
+                        failedPatches.push({ filePath, error: errMsg });
+                        this._panel.webview.postMessage({
+                            command: 'applyAllResult',
+                            messageId,
+                            filePath,
+                            blockIndex: currentBlockIndex,
+                            blockId,
+                            success: false,
+                            error: errMsg
+                        });
+                    }
                 }
             }
         }
 
-        // 2. Process Fenced Code Blocks (Standard)
+        // 2. Process Fenced Code Blocks (Standard, outside XML <file> blocks)
         const blockRegex = /```[\t ]*(?:language:|lang:)?(\w+)[\t ]*:[\t ]*([^\n\r\s]+)[\t ]*[\r\n]+([\s\S]+?)[\r\n]+```/g;
+        const fencedRanges: { start: number; end: number }[] = [];
         let match;
 
-        while ((match = blockRegex.exec(content)) !== null) {
+        while ((match = blockRegex.exec(normalizedContent)) !== null) {
             if (signal.aborted) break;
+            if (xmlBlockRanges.some(r => match!.index >= r.start && match!.index < r.end)) continue;
+
+            fencedRanges.push({ start: match.index, end: match.index + match[0].length });
             let filePath = match[2];
             let blockContent = match[3];
 
-            const currentBlockIndex = blockIndex++; // Track block index
+            const currentBlockIndex = fencedLocalIdx++;
             const opts = { silent: true, autoSave: true, blockIndex: currentBlockIndex };
 
             const isAiderInside = blockContent.includes('<<<<<<< SEARCH') || /^[ \t]*={5,}[ \t]*$/m.test(blockContent);
             const commonLangs = ['makefile', 'python', 'py', 'javascript', 'js', 'typescript', 'ts', 'json', 'bash', 'sh', 'css', 'html'];
 
-            const { isValidFilePath } = require('../../utils');
-
             if (isAiderInside && commonLangs.includes(filePath.toLowerCase())) {
-                const precedingText = content.substring(Math.max(0, match.index - 250), match.index);
+                const precedingText = normalizedContent.substring(Math.max(0, match.index - 250), match.index);
                 const backticks = [...precedingText.matchAll(/`([^`\n\r]+)`/g)].map(m => m[1].trim());
                 const validBacktickPath = backticks.reverse().find(b => isValidFilePath(b));
                 if (validBacktickPath) {
@@ -650,7 +789,6 @@ export class ChatPanel {
                 }
             }
 
-            // Skip block if path is invalid or looks like a placeholder
             if (!isValidFilePath(filePath)) {
                 continue;
             }
@@ -660,32 +798,56 @@ export class ChatPanel {
             if (isAiderInside) {
                 const normalizedAider = normalizeAiderContent(blockContent);
                 const result: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, normalizedAider, this, messageId, { ...opts, autoSave: true });
-
-                // If the patch application failed, trigger automated self-correction (Mute for system IDs to prevent infinite loops)
-                const isSystemId = messageId.startsWith('self_correction') || messageId.startsWith('guardian') || messageId.startsWith('system') || messageId.startsWith('inspection');
-                if (result && !result.success && !isSystemId && !signal.aborted) {
+                if (result?.success) {
+                    appliedCount++;
+                    await this.updateAppliedState(messageId, currentBlockIndex);
+                    this._panel.webview.postMessage({ command: 'fileSavedOnDisk', filePath, messageId, blockIndex: currentBlockIndex });
+                    this.auditFileDiagnostics(filePath, messageId, currentBlockIndex);
+                } else if (enableAutoFix && !isSystemId && !signal.aborted) {
                     this.log(`Patch failed for ${filePath}. Initiating automated AI self-correction...`, 'WARN');
-                    await this.triggerSurgicalSelfCorrection(filePath, normalizedAider, result.error || "Search block mismatch.", signal, 1);
+                    const fixed = await this.triggerSurgicalSelfCorrection(filePath, normalizedAider, result?.error || "Search block mismatch.", signal, 1);
+                    if (fixed) {
+                        appliedCount++;
+                        await this.updateAppliedState(messageId, currentBlockIndex);
+                        this._panel.webview.postMessage({ command: 'fileSavedOnDisk', filePath, messageId, blockIndex: currentBlockIndex });
+                    } else {
+                        failedPatches.push({ filePath, error: result?.error || "Search block mismatch." });
+                    }
+                } else {
+                    failedPatches.push({ filePath, error: result?.error || "Search block mismatch." });
                 }
             } else {
                 const result: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', filePath, blockContent, { silent: true, autoSave: true, messageId, blockIndex: currentBlockIndex });
                 if (result?.success) {
+                    appliedCount++;
+                    await this.updateAppliedState(messageId, currentBlockIndex);
                     this._panel.webview.postMessage({
                         command: 'fileSavedOnDisk',
-                        filePath: filePath
+                        filePath: filePath,
+                        messageId,
+                        blockIndex: currentBlockIndex
                     });
+                    this.auditFileDiagnostics(filePath, messageId, currentBlockIndex);
+                } else {
+                    failedPatches.push({ filePath, error: result?.error || "Failed to apply file content." });
                 }
             }
         }
 
-        // 2. Process Naked Aider Blocks (No backtick fences)
-        const lines = content.split('\n');
+        // 3. Process Naked Aider Blocks (No backtick fences and outside XML <file> blocks)
+        const lines = normalizedContent.split('\n');
+        let lineOffset = 0;
         for (let i = 0; i < lines.length; i++) {
-            if (signal.aborted) break;
-            const line = lines[i].trim();
+            const lineLen = lines[i].length + 1;
+            const curOffset = lineOffset;
+            lineOffset += lineLen;
 
+            if (signal.aborted) break;
+            if (xmlBlockRanges.some(r => curOffset >= r.start && curOffset < r.end)) continue;
+            if (fencedRanges.some(r => curOffset >= r.start && curOffset < r.end)) continue;
+
+            const line = lines[i].trim();
             if (line.startsWith('<<<<<<< SEARCH')) {
-                // Find matching REPLACE end
                 let endIdx = -1;
                 for (let j = i + 1; j < lines.length; j++) {
                     if (lines[j].trim().startsWith('>>>>>>> REPLACE')) {
@@ -696,12 +858,10 @@ export class ChatPanel {
 
                 if (endIdx !== -1) {
                     const blockContent = lines.slice(i, endIdx + 1).join('\n');
-                    const currentBlockIndex = blockIndex++; // Track block index
+                    const currentBlockIndex = fencedLocalIdx++;
                     const opts = { silent: true, autoSave: true, blockIndex: currentBlockIndex };
 
-                    // Recover path from preceding text strictly verifying valid file paths
                     let filePath = "";
-                    const { isValidFilePath } = require('../../utils');
                     for (let k = i - 1; k >= Math.max(0, i - 15); k--) {
                         const allBackticks = [...lines[k].matchAll(/`([^`\n\r]+)`/g)].map(m => m[1].trim());
                         const best = allBackticks.reverse().find(b => isValidFilePath(b));
@@ -721,14 +881,29 @@ export class ChatPanel {
                         const normalizedAider = blockContent.replace(/^\s*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)/gm, '$1');
                         const result: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, normalizedAider, this, messageId, opts);
 
-                        // Trigger automated self-correction for naked block failure
-                        const isSystemId = messageId.startsWith('self_correction') || messageId.startsWith('guardian') || messageId.startsWith('system') || messageId.startsWith('inspection');
-                        if (result && !result.success && !isSystemId && !signal.aborted) {
+                        if (result?.success) {
+                            appliedCount++;
+                            await this.updateAppliedState(messageId, currentBlockIndex);
+                            this._panel.webview.postMessage({ command: 'fileSavedOnDisk', filePath, messageId, blockIndex: currentBlockIndex });
+                            this.auditFileDiagnostics(filePath, messageId, currentBlockIndex);
+                        } else if (enableAutoFix && !isSystemId && !signal.aborted) {
                             this.log(`Naked patch failed for ${filePath}. Initiating automated AI self-correction...`, 'WARN');
-                            await this.triggerSurgicalSelfCorrection(filePath, normalizedAider, result.error || "Search block mismatch.", signal, 1);
+                            const fixed = await this.triggerSurgicalSelfCorrection(filePath, normalizedAider, result?.error || "Search block mismatch.", signal, 1);
+                            if (fixed) {
+                                appliedCount++;
+                                await this.updateAppliedState(messageId, currentBlockIndex);
+                                this._panel.webview.postMessage({ command: 'fileSavedOnDisk', filePath, messageId, blockIndex: currentBlockIndex });
+                            } else {
+                                failedPatches.push({ filePath, error: result?.error || "Search block mismatch." });
+                            }
+                        } else {
+                            failedPatches.push({ filePath, error: result?.error || "Search block mismatch." });
                         }
                     }
-                    i = endIdx; // Advance parser beyond the block
+                    for (let adv = i + 1; adv <= endIdx; adv++) {
+                        lineOffset += lines[adv].length + 1;
+                    }
+                    i = endIdx;
                 }
             }
         }
@@ -747,12 +922,24 @@ export class ChatPanel {
             this.recordCurrentPromptFiles(modPaths);
         }
 
-        // 🛡️ GUARDIAN PROTOCOL: Automated Repair Loop (Bypassed during multi-part steps to preserve step continuity)
-        if (this._discussionCapabilities.autoFix && modifiedFiles.size > 0 && !this._activeMultiPartPlan) {
-            const urisToFix = Array.from(modifiedFiles).map(fp => vscode.Uri.joinPath(workspaceFolder.uri, fp));
-            await this.repairFilesIteratively(urisToFix, signal, processId, messageId);
+        // 🛡️ GUARDIAN PROTOCOL: Automated Repair Loop
+        if (enableAutoFix && modifiedFiles.size > 0 && !options?.skipGuardianRepairLoop) {
+            const urisToFix: vscode.Uri[] = [];
+            for (const fp of modifiedFiles) {
+                const res = await this._contextManager.resolveWorkspaceFromPath(fp);
+                if (res) urisToFix.push(res.uri);
+            }
+            if (urisToFix.length > 0) {
+                await this.repairFilesIteratively(urisToFix, signal, processId, messageId);
+            }
         }
-        }
+
+        return {
+            modifiedFiles: Array.from(modifiedFiles),
+            appliedCount,
+            failedPatches
+        };
+    }
 
 
 
@@ -830,7 +1017,7 @@ Perform a cold, critical audit of the current state of these files on disk. Look
         } catch (e: any) {
             this.log(`Guardian Audit failed: ${e.message}`, 'ERROR');
         }
-        }
+    }
 
     public setAgentManager(agent: AgentManager) {
           this.agentManager = agent;
@@ -841,18 +1028,18 @@ Perform a cold, critical audit of the current state of these files on disk. Look
        * Spawns an automated AI correction turn when a search/replace patch fails.
        * Supports up to 4 total attempts, but terminates early if a repeated failing approach is detected.
        */
-      public async triggerSurgicalSelfCorrection(filePath: string, failingPatch: string, errorMsg: string, signal: AbortSignal, currentAttempt: number = 1) {
+      public async triggerSurgicalSelfCorrection(filePath: string, failingPatch: string, errorMsg: string, signal: AbortSignal, currentAttempt: number = 1): Promise<boolean> {
           const maxAttempts = 4;
           if (currentAttempt > maxAttempts) {
               this.log(`Self-Correction: Reached maximum attempts limit (${maxAttempts}) for ${filePath}. Halting.`, 'WARN');
-              return;
+              return false;
           }
 
           const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-          if (!workspaceFolder) return;
+          if (!workspaceFolder) return false;
 
           const resolution = await this._contextManager.resolveWorkspaceFromPath(filePath);
-          if (!resolution) return;
+          if (!resolution) return false;
 
           // Register the initial failure into the duplicate-prevention registry
           if (!this._failedPatchesRegistry.has(filePath)) {
@@ -865,9 +1052,12 @@ Perform a cold, critical audit of the current state of these files on disk. Look
           try {
               const document = await vscode.workspace.openTextDocument(resolution.uri);
               originalFileContent = document.getText();
+              if (originalFileContent.length > 60000) {
+                  originalFileContent = originalFileContent.substring(0, 60000) + `\n... [Truncated at 60000 chars; total ${originalFileContent.length} chars]`;
+              }
           } catch (e: any) {
               this.log(`Self-Correction: Could not read original file ${filePath}: ${e.message}`, 'ERROR');
-              return;
+              return false;
           }
 
           const correctionMsgId = 'self_correction_' + Date.now() + '_' + currentAttempt;
@@ -914,11 +1104,27 @@ ${originalFileContent}
                   { role: 'user', content: userPrompt }
               ], null, signal, model, { thinking: false });
 
-              if (signal.aborted) return;
+              if (signal.aborted) return false;
 
               const cleanResponse = stripThinkingTags(response);
 
-              // Extract the fixed block from the response
+              // Extract the fixed block from <file> tag, Aider block, or fenced block
+              const normalizedResp = normalizePseudoFileBlocks(cleanResponse);
+              const xmlBlocks = extractFileBlocks(normalizedResp);
+              if (xmlBlocks.length > 0) {
+                  const firstXml = xmlBlocks[0];
+                  const attrs = parseFileTagAttributes(firstXml.attrStr, firstXml.rawContent);
+                  if (attrs && (attrs.action === 'update_symbol' || attrs.action === 'write')) {
+                      const targetPath = attrs.symbol ? `${filePath}:${attrs.symbol}` : filePath;
+                      const applySymRes: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', targetPath, firstXml.rawContent, { silent: true, autoSave: true });
+                      if (applySymRes?.success) {
+                          await this.updateMessageContent(correctionMsgId, `🛡️ **Sovereign Shield**: Corrected ${attrs.action} successfully applied to \`${targetPath}\`.`);
+                          this._failedPatchesRegistry.delete(filePath);
+                          return true;
+                      }
+                  }
+              }
+
               let fixedBlock = "";
               const startTag = "<<<<<<< SEARCH";
               const endTag = ">>>>>>> REPLACE";
@@ -927,10 +1133,14 @@ ${originalFileContent}
 
               if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
                   fixedBlock = cleanResponse.substring(startIdx, endIdx + endTag.length);
+              } else if (xmlBlocks.length > 0 && xmlBlocks[0].rawContent.includes(startTag)) {
+                  fixedBlock = xmlBlocks[0].rawContent;
               } else {
-                  const match = cleanResponse.match(/```(?:\w+)?\n([\s\S]*?)\n```/);
+                  const match = cleanResponse.match(/```(?:\w+)?\r?\n([\s\S]*?)\r?\n```/);
                   fixedBlock = match ? match[1].trim() : cleanResponse.trim();
               }
+
+              fixedBlock = normalizeAiderContent(fixedBlock);
 
               if (fixedBlock && fixedBlock.includes("<<<<<<< SEARCH")) {
                   const normalizedFixedBlock = fixedBlock.replace(/\s+/g, ' ').trim();
@@ -946,7 +1156,7 @@ ${originalFileContent}
   *Self-correction halted to prevent infinite loops. Please edit manually using the Raw Block tool.*`,
                           skipInPrompt: true
                       });
-                      return;
+                      return false;
                   }
 
                   const successMsgId = 'self_correction_applied_' + Date.now() + '_' + currentAttempt;
@@ -962,29 +1172,29 @@ ${originalFileContent}
 
                   if (applyResult && applyResult.success) {
                       await this.updateMessageContent(successMsgId, `🛡️ **Sovereign Shield**: Corrected patch successfully applied to \`${filePath}\`.`);
-                      // Clear registry on complete success
                       this._failedPatchesRegistry.delete(filePath);
+                      return true;
                   } else {
                       const nextError = applyResult?.error || "Search block mismatch.";
-                      await this.updateMessageContent(successMsgId, `🛡️ **Sovereign Shield**: Corrected patch also failed to apply. Recurving loop...`);
-                      // Recurse into the next attempt
-                      await this.triggerSurgicalSelfCorrection(filePath, fixedBlock, nextError, signal, currentAttempt + 1);
+                      await this.updateMessageContent(successMsgId, `🛡️ **Sovereign Shield**: Corrected patch also failed to apply. Retrying...`);
+                      return await this.triggerSurgicalSelfCorrection(filePath, fixedBlock, nextError, signal, currentAttempt + 1);
                   }
               } else if (cleanResponse.includes('```')) {
-                  // Fallback: If AI returned fenced block without direct markers, apply it
-                  const match = cleanResponse.match(/```(?:\w+)?\n([\s\S]*?)\n```/);
+                  const match = cleanResponse.match(/```(?:\w+)?\r?\n([\s\S]*?)\r?\n```/);
                   const block = match ? match[1].trim() : cleanResponse.trim();
                   const applyResult: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, block, this, correctionMsgId, { silent: true, autoSave: true });
                   if (applyResult?.success) {
                       await this.updateMessageContent(correctionMsgId, `🛡️ **Sovereign Shield**: Corrected patch successfully applied to \`${filePath}\`.`);
                       this._failedPatchesRegistry.delete(filePath);
+                      return true;
                   }
               } else {
                   await this.updateMessageContent(correctionMsgId, `🛡️ **Sovereign Shield**: AI repair produced an invalid format. Please resolve the conflict manually.`);
               }
-
+              return false;
           } catch (e: any) {
               this.log(`Automated self-correction failed: ${e.message}`, 'ERROR');
+              return false;
           }
       }
 
@@ -2123,6 +2333,9 @@ If you need to modify files, privilege using <unmute_files> to recover full cont
             this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
         }  
 
+        // Ensure HUD model selector is hydrated on every discussion load/switch
+        this._fetchAndSetModels(false).catch(() => {});
+
         // Fast background sync deferred past initial webview paint
         setTimeout(async () => {
             if (this._panel && this._panel.webview && !this._isDisposed) {
@@ -2208,11 +2421,14 @@ If you need to modify files, privilege using <unmute_files> to recover full cont
                   inner.split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean).forEach(p => files.add(p.replace(/\\/g, '/').toLowerCase().trim()));
               }
           }
-          const fileMatch = text.match(/<file\s+([^>]*?)>/gi);
+          const fileMatch = text.match(/^[ \t]*<file\s+([^>]*?)>/gim);
           if (fileMatch) {
               for (const fm of fileMatch) {
                   const pathMatch = fm.match(/path=["']([^"']+)["']/i);
-                  if (pathMatch) files.add(pathMatch[1].trim().replace(/\\/g, '/').toLowerCase());
+                  const pVal = pathMatch ? pathMatch[1].trim().replace(/\\/g, '/').toLowerCase() : '';
+                  if (pVal && pVal !== '...' && !pVal.startsWith('path/to/') && isValidFilePath(pVal)) {
+                      files.add(pVal);
+                  }
               }
           }
       }
@@ -2245,14 +2461,48 @@ If you need to modify files, privilege using <unmute_files> to recover full cont
       return persona ? persona.systemPrompt : "";
   }
 
+  private updateThinkTimingsFromBuffer(
+      buffer: string,
+      timings: Array<{ start: number; end?: number }>,
+      firstTokenTime?: number
+  ): void {
+      if (!buffer) return;
+      const scannable = buffer
+          .replace(/<file\b[^>]*>[\s\S]*?(?:<\/file>|$)/gi, '')
+          .replace(/```[\s\S]*?(?:```|$)|`[^`\r\n]+`/g, '');
+      const openCount = (scannable.match(/<(?:think|thinking|thought|analysis|reasoning)\b[^>]*>/gi) || []).length;
+      const closeCount = (scannable.match(/<\/(?:think|thinking|thought|analysis|reasoning)\s*>/gi) || []).length;
+      const now = Date.now();
+
+      if (closeCount > openCount && timings.length === 0) {
+          timings.push({ start: firstTokenTime || now, end: now });
+          return;
+      }
+      while (timings.length < openCount) {
+          timings.push({ start: now });
+      }
+      for (let i = 0; i < Math.min(closeCount, timings.length); i++) {
+          if (timings[i].end === undefined) {
+              timings[i].end = now;
+          }
+      }
+  }
+
+  private finalizeThinkTimings(timings: Array<{ start: number; end?: number }>): number[] {
+      const now = Date.now();
+      return timings.map(t => Math.max(0, (t.end ?? now) - t.start));
+  }
+
   private async _fetchAndSetModels(forceRefresh: boolean = false) {
     if (this._isDisposed) return;
     try {
         if (!this._panel.webview) return;
         let models: Array<{ id: string; name?: string; server?: string }> = [];
+        let fetchFailed = false;
         try {
             models = await this._lollmsAPI.getModels(forceRefresh);
         } catch (error: any) {
+            fetchFailed = true;
             this.log(`Failed to fetch models: ${error.message}`, 'WARN');
         }
 
@@ -2264,11 +2514,27 @@ If you need to modify files, privilege using <unmute_files> to recover full cont
             hasVision: isModelVisionCapable(m.id, config)
         }));
 
+        const preserveOnEmpty = fetchFailed && this._lollmsAPI.getAllActiveBindings().length > 0;
+
         this._panel.webview.postMessage({ 
             command: 'updateModels',
             models: modelsWithVision,
-            currentModel: activeModel
+            currentModel: activeModel,
+            preserveOnEmpty
         });
+
+        if (forceRefresh && modelsWithVision.length > 0) {
+            ChatPanel.panels.forEach((panel) => {
+                if (panel !== this && !panel._isDisposed && panel._panel?.webview) {
+                    panel._panel.webview.postMessage({
+                        command: 'updateModels',
+                        models: modelsWithVision,
+                        currentModel: panel._currentDiscussion?.model || this._lollmsAPI.getModelName(),
+                        preserveOnEmpty: true
+                    });
+                }
+            });
+        }
     } catch (e: any) {
         this.log(`Unexpected error in _fetchAndSetModels: ${e.message}`, 'ERROR');
     }
@@ -2371,12 +2637,13 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
         return;
     }
 
-    if ((self as any)._tokenDebounceTimeout) {
-        clearTimeout((self as any)._tokenDebounceTimeout);
-    }
+    self.clearTokenDebounce();
 
     return new Promise<void>((resolvePromise) => {
+        (self as any)._tokenDebounceResolver = resolvePromise;
         (self as any)._tokenDebounceTimeout = setTimeout(async () => {
+            (self as any)._tokenDebounceTimeout = undefined;
+            (self as any)._tokenDebounceResolver = undefined;
             if (self._isDisposed || !self._panel || !self._panel.webview) {
                 return resolvePromise();
             }
@@ -3118,7 +3385,19 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
         return contextData.selectedFilesContent;
     }
 
-    private async waitForWebviewReady() { if (this._isWebviewReady) return; return this._viewReadyPromise; }
+    private clearTokenDebounce() {
+      if ((this as any)._tokenDebounceTimeout) {
+          clearTimeout((this as any)._tokenDebounceTimeout);
+          (this as any)._tokenDebounceTimeout = undefined;
+      }
+      if (typeof (this as any)._tokenDebounceResolver === 'function') {
+          const prevResolve = (this as any)._tokenDebounceResolver;
+          (this as any)._tokenDebounceResolver = undefined;
+          prevResolve();
+      }
+  }
+
+  private async waitForWebviewReady() { if (this._isWebviewReady) return; return this._viewReadyPromise; }
   
   public async setInputText(text: string, images?: { name: string; data: string }[]) {
       this._initialPrompt = text;
@@ -3781,11 +4060,17 @@ ${filesSection}
     // 2. Perform the deletion
     // If it's an attachment, we only remove that specific message
     const targetMsg = this._currentDiscussion.messages[index];
+    let removedIds: string[] = [];
     if (targetMsg.id?.startsWith('attachment_') || targetMsg.id?.startsWith('librarian_master_')) {
+        if (targetMsg.id) removedIds.push(targetMsg.id);
         this._currentDiscussion.messages.splice(index, 1);
         this.log(`Deleted specific item: ${targetMsg.id}`);
     } else {
         // Otherwise, truncate from index onwards (Standard chat behavior)
+        removedIds = this._currentDiscussion.messages
+            .slice(index)
+            .map(m => m.id)
+            .filter((id): id is string => !!id);
         this._currentDiscussion.messages.splice(index);
         this.log(`Deleted messages starting from index ${index}.`);
     }
@@ -3799,13 +4084,15 @@ ${filesSection}
         (this.agentManager as any).chatHistory = [...this._currentDiscussion.messages];
     }
 
-    // 3. Persist to disk
+    // 3. Immediately update Webview DOM without tearing down & reloading the entire discussion
+    if (this._panel.webview && !this._isDisposed && removedIds.length > 0) {
+        this._panel.webview.postMessage({ command: 'removeMessages', messageIds: removedIds });
+    }
+
+    // 4. Persist to disk
     if (!this._currentDiscussion.id.startsWith('temp-')) {
         await this._discussionManager.saveDiscussion(this._currentDiscussion);
     }
-
-    // 4. Refresh UI
-    await this.loadDiscussion();
     
     // 5. Refresh sidebar tree
     vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
@@ -3827,10 +4114,7 @@ ${filesSection}
       this.processManager.cancelForDiscussion(this.discussionId);
       ChatPanel.activeGenerations.delete(this.discussionId);
 
-      if ((this as any)._tokenDebounceTimeout) {
-          clearTimeout((this as any)._tokenDebounceTimeout);
-          (this as any)._tokenDebounceTimeout = undefined;
-      }
+      this.clearTokenDebounce();
       if (this._tokenAbortController) {
           this._tokenAbortController.abort();
           this._tokenAbortController = null;
@@ -3986,10 +4270,7 @@ ${filesSection}
       this.processManager.cancelForDiscussion(this.discussionId);
       ChatPanel.activeGenerations.delete(this.discussionId);
 
-      if ((this as any)._tokenDebounceTimeout) {
-          clearTimeout((this as any)._tokenDebounceTimeout);
-          (this as any)._tokenDebounceTimeout = undefined;
-      }
+      this.clearTokenDebounce();
       if (this._tokenAbortController) {
           this._tokenAbortController.abort();
           this._tokenAbortController = null;
@@ -4620,6 +4901,7 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
 
     let assistantMessageId = '';
     let fullResponse = "";
+    let currentFullResponseBuffer = "";
 
     try {
         if (controller?.signal.aborted) {
@@ -4686,12 +4968,13 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
             lastAssistantContent.toLowerCase().includes('plan')
         );
 
+        const isFormSubmission = typeof rawUserPromptText === 'string' && rawUserPromptText.startsWith('FORM_SUBMISSION:');
         const isPlanConfirmation = !isFastModePre && isConfirmationText && lastAssistantHadPlan;
 
         // ── UNIFIED SINGLE ASSISTANT MESSAGE INITIALIZATION ──
         // Everything for this turn (Librarian directive + Coder implementation) lives in this ONE message!
         assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
-        let currentFullResponseBuffer = "";
+        currentFullResponseBuffer = "";
 
         const memManager = (this as any).projectMemoryManager || this.agentManager?.projectMemoryManager;
         const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && memManager)
@@ -4723,6 +5006,7 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
         const shouldRunMasterLibrarian = !isFastMode &&
             this._discussionCapabilities.contextGovernorEnabled !== false &&
             !isPlanConfirmation && 
+            !isFormSubmission &&
             !isMultiPartCont && 
             !this._discussionCapabilities.disableProjectContext &&
             folders && folders.length > 0 &&
@@ -5031,8 +5315,11 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
             } as any
         );
 
+        const thinkTimings: Array<{ start: number; end?: number }> = [];
+        let firstTokenTimestamp: number | undefined;
+
         let currentTurnIndex = 0;
-        const maxTurnsLimit = 12;
+        const maxTurnsLimit = (this._discussionCapabilities as any).autoMaxRounds || 12;
         const completedDynamicActions: string[] = [];
 
         let consecutiveFailsCount = 0;
@@ -5044,6 +5331,145 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
         let consecutiveCompressionLoopCount = 0;
         let forceFinalAnswerNoTools = false;
         let ghostRetriesCount = 0;
+        let patchesAppliedInLoop = false;
+        let formDetectedInTurn = false;
+        let requestedMultiPhaseSplit = false;
+        let multiPhaseStartedFromCoderPlan = false;
+
+        const isAutoModeActive =
+            this._discussionCapabilities.autoExecuteTools === true ||
+            (this._discussionCapabilities as any).autoExecuteScouting === true ||
+            (this._discussionCapabilities as any).autoExecuteCode === true ||
+            this._currentDiscussion?.capabilities?.autoExecuteTools === true ||
+            (this._currentDiscussion?.capabilities as any)?.autoExecuteScouting === true ||
+            (this._currentDiscussion?.capabilities as any)?.autoExecuteCode === true ||
+            (this._discussionCapabilities as any).autoMode === true ||
+            this._discussionCapabilities.agentMode === true;
+
+        const countCodeBlocksInBuffer = (bufferText: string): { xmlCount: number; fencedCount: number } => {
+            if (!bufferText) return { xmlCount: 0, fencedCount: 0 };
+            const scannable = stripThinkingTags(bufferText);
+            let norm = normalizePseudoFileBlocks(scannable);
+            norm = norm.replace(/^[ \t]*<delete_code\b([^>]*?)>([\s\S]*?)<\/delete_code>[ \t]*$/gim, (m: string, attrStr: string, body: string) => {
+                const attrs = parseFileTagAttributes(attrStr);
+                return attrs?.path ? `\n\n<file path="${attrs.path}" action="delete_code">\n${body.trim()}\n</file>
+
+\n\n` : m;
+            });
+            const xmlBlocks = extractFileBlocks(norm).filter(b => {
+                const attrs = parseFileTagAttributes(b.attrStr, b.rawContent);
+                return !!(attrs && attrs.path);
+            });
+            const xmlRanges = xmlBlocks.map(b => ({ start: b.start, end: b.end }));
+
+            let fencedCount = 0;
+            const blockRe = /```[\t ]*(?:language:|lang:)?(\w+)[\t ]*:[\t ]*([^\n\r\s]+)[\t ]*[\r\n]+([\s\S]+?)[\r\n]+```/g;
+            const fencedRanges: { start: number; end: number }[] = [];
+            let fm: RegExpExecArray | null;
+            while ((fm = blockRe.exec(norm)) !== null) {
+                if (xmlRanges.some(r => fm!.index >= r.start && fm!.index < r.end)) continue;
+                fencedRanges.push({ start: fm.index, end: fm.index + fm[0].length });
+                if (isValidFilePath(fm[2])) fencedCount++;
+            }
+
+            const linesArr = norm.split('\n');
+            let off = 0;
+            for (let li = 0; li < linesArr.length; li++) {
+                const curOff = off;
+                off += linesArr[li].length + 1;
+                if (xmlRanges.some(r => curOff >= r.start && curOff < r.end)) continue;
+                if (fencedRanges.some(r => curOff >= r.start && curOff < r.end)) continue;
+                if (linesArr[li].trim().startsWith('<<<<<<< SEARCH')) {
+                    for (let lj = li + 1; lj < linesArr.length; lj++) {
+                        if (linesArr[lj].trim().startsWith('>>>>>>> REPLACE')) {
+                            fencedCount++;
+                            for (let adv = li + 1; adv <= lj; adv++) off += linesArr[adv].length + 1;
+                            li = lj;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            return { xmlCount: xmlBlocks.length, fencedCount };
+        };
+
+        const parseCoderMultiPhasePlan = (text: string): {
+            parts: Array<{ partIndex: number; totalParts: number; editFiles: string[]; partInstruction: string; fileModes?: Array<{ path: string; mode: 'full' | 'structure' | 'symbols'; symbols?: string[] }> }>;
+        } | null => {
+            if (!text) return null;
+            const planMatch = text.match(/<plan\b[^>]*>([\s\S]*?)<\/plan>/i);
+            if (!planMatch) return null;
+            const planBody = planMatch[1];
+
+            const phaseRegex = /<phase\b[^>]*(?:id|number)=["']?(\d+)["']?[^>]*>([\s\S]*?)<\/phase>/gi;
+            let pm: RegExpExecArray | null;
+            const parsedParts: Array<{ partIndex: number; totalParts: number; editFiles: string[]; partInstruction: string; fileModes?: Array<{ path: string; mode: 'full' | 'structure' | 'symbols'; symbols?: string[] }> }> = [];
+
+            while ((pm = phaseRegex.exec(planBody)) !== null) {
+                const phaseBody = pm[2] || '';
+                const instMatch = phaseBody.match(/<(?:instruction|instructions)>([\s\S]*?)<\/(?:instruction|instructions)>/i);
+                const partInstruction = (instMatch ? instMatch[1] : phaseBody.replace(/<[^>]+>[\s\S]*?<\/[^>]+>/g, '')).trim();
+
+                const filesMatch = phaseBody.match(/<(?:files_list|target_files|edit_files|files|filesList)>([\s\S]*?)<\/(?:files_list|target_files|edit_files|files|filesList)>/i);
+                const rawFilesText = filesMatch ? filesMatch[1] : '';
+                const editFiles: string[] = [];
+                const fileModes: Array<{ path: string; mode: 'full' | 'structure' | 'symbols'; symbols?: string[] }> = [];
+
+                rawFilesText.split(/[\r\n,]+/).forEach(l => {
+                    const clean = l.replace(/^[\s*#\-`'"]+|[\s*#\-`'"]+$/g, '').trim();
+                    if (!clean || clean.startsWith('<')) return;
+
+                    const structureMatch = clean.match(/^([^\s()]+)\s*\((?:structure|definitions)\)/i);
+                    const symbolsMatch = clean.match(/^([^\s()]+)\s*\((?:symbols?|code):\s*([^)]+)\)/i);
+                    const fullMatch = clean.match(/^([^\s()]+)\s*\((?:full|complete)\)/i);
+
+                    if (symbolsMatch) {
+                        const p = symbolsMatch[1].trim();
+                        const syms = symbolsMatch[2].split(/[,;]+/).map(s => s.trim()).filter(Boolean);
+                        if (isValidFilePath(p)) {
+                            if (!editFiles.includes(p)) editFiles.push(p);
+                            fileModes.push({ path: p, mode: 'symbols', symbols: syms });
+                        }
+                    } else if (structureMatch) {
+                        const p = structureMatch[1].trim();
+                        if (isValidFilePath(p)) {
+                            if (!editFiles.includes(p)) editFiles.push(p);
+                            fileModes.push({ path: p, mode: 'structure' });
+                        }
+                    } else if (fullMatch) {
+                        const p = fullMatch[1].trim();
+                        if (isValidFilePath(p)) {
+                            if (!editFiles.includes(p)) editFiles.push(p);
+                            fileModes.push({ path: p, mode: 'full' });
+                        }
+                    } else {
+                        const p = clean.split(/\s+/)[0].replace(/^['"`]|['"`]$/g, '');
+                        if (p && isValidFilePath(p) && !editFiles.includes(p)) {
+                            editFiles.push(p);
+                            fileModes.push({ path: p, mode: 'full' });
+                        }
+                    }
+                });
+
+                if (editFiles.length > 0 || partInstruction) {
+                    parsedParts.push({
+                        partIndex: parsedParts.length,
+                        totalParts: 0,
+                        editFiles,
+                        partInstruction: partInstruction || `Implement Phase ${parsedParts.length + 1}`,
+                        fileModes
+                    });
+                }
+            }
+
+            if (parsedParts.length === 0) return null;
+            parsedParts.forEach((p, idx) => {
+                p.partIndex = idx;
+                p.totalParts = parsedParts.length;
+            });
+            return { parts: parsedParts };
+        };
 
         if (budgetOptimization.cutFiles && budgetOptimization.cutFiles.length > 0) {
             budgetOptimization.cutFiles.forEach(cf => cutByCompressionFiles.add(cf));
@@ -5070,10 +5496,10 @@ I am providing you with the real-time, ground-truth state of my project files on
 NOTE: This loaded content is your SOLE source of truth. Do NOT assume that patches or changes you suggested in previous turns are applied unless they appear in the file content below.
 
 #### 📜 FILE MODIFICATION & STRUCTURE RULES:
-1. **FULL CONTENT REQUIRED FOR EDITS**: To modify or patch any file, you MUST possess its full content under 'LOADED FILE CONTENTS' [C].
-2. **PRIVILEGE UNMUTE (FULL CODE) OVER STRUCTURE**: Generating structure from code takes extra time and processing. When you are not heavily constrained by token budget or context limits, always **privilege using \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` to get full code directly**.
+1. **FULL CONTENT OR LOADED SYMBOLS ALLOWED FOR EDITS**: You can modify any file loaded in full under 'LOADED FILE CONTENTS' [C], **OR** directly update any symbol whose implementation is already loaded in \`mode="symbols"\` using \`<file path="..." action="update_symbol" symbol="SymbolName">\` or \`<file path="..." action="patch">\` (you do NOT need the full file to update already-loaded symbols).
+2. **PRIVILEGE UNMUTE (FULL CODE) OVER STRUCTURE WHEN BUDGET ALLOWS**: Generating structure from code takes extra time. When you are not constrained by token budget, **privilege using \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` to get full code directly**.
 3. **UPGRADE STRUCTURE TO FULL CODE VIA UNMUTE**: Calling \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` automatically transitions files from **structure-only [D]** directly to **full code [C]**, as well as unmuting [M] files to full code [C].
-4. **USE STRUCTURE ONLY WHEN RESOURCE-CONSTRAINED**: ONLY use structure (\`<load_structure path="..." />\` or mode="structure") if the file will NOT be modified AND the context budget is too bloated to fit full content. Never attempt to patch a file in structure-only mode.
+4. **USE STRUCTURE / SYMBOLS WHEN RESOURCE-CONSTRAINED**: When context budget is tight, use \`<manage_symbols path="..." activate="Sym1, Sym2" />\` or \`<load_structure path="..." />\` to keep only the few needed symbols in full while compacting the rest. Never attempt to patch a file in bare structure-only mode without its target symbol loaded.
 ${leanNotice}
 ${missionBriefingText ? `#### 🎯 MISSION BRIEFING & PROJECT-WIDE MEMORY\n${missionBriefingText}\n` : ""}
 ${memoryBlockInState}
@@ -5089,6 +5515,15 @@ ${activeContextData.selectedFilesContent ? `#### 📄 LOADED FILE CONTENTS\n${ac
                 const promptStr = typeof currentPromptMessage.content === 'string' 
                     ? currentPromptMessage.content 
                     : (Array.isArray(currentPromptMessage.content) ? currentPromptMessage.content.map((p: any) => p.text || '').join('\n') : '');
+
+                let effectivePromptStr = promptStr;
+                if (promptStr.startsWith('FORM_SUBMISSION:')) {
+                    try {
+                        const parsedForm = JSON.parse(promptStr.substring(16).trim());
+                        const entries = Object.entries(parsedForm).map(([k, v]) => `- **${k}**: ${v}`).join('\n');
+                        effectivePromptStr = `### ✅ USER FORM SUBMISSION\nThe user submitted the requested form with these answers:\n${entries}\n\nProceed immediately using these answers.`;
+                    } catch {}
+                }
                 
                 const confirmationNudge = isPlanConfirmation ? `
 \n\n### 🚀 PLAN CONFIRMED: MANDATORY STAGE 3 CODE IMPLEMENTATION
@@ -5098,7 +5533,7 @@ The user has CONFIRMED and VALIDATED your plan.
 - **MANDATORY <file> MUTATION TAGS**: You MUST output the actual code updates using \`<file path="..." action="write|patch|update_symbol">\` tags for every file you planned to change.
 - **NEVER CLAIM TO FINISH WITHOUT CODE**: Saying "Stage 3 is complete" or describing changes without outputting <file> tags is strictly forbidden. All updates must be delivered in real <file> code blocks.` : '';
 
-                userContentPayload = `${stateText}\n\n${promptStr}${confirmationNudge}`.trim();
+                userContentPayload = `${stateText}\n\n${effectivePromptStr}${confirmationNudge}`.trim();
             }
 
             if (this._discussionCapabilities.enableImages !== false && activeContextData.images && activeContextData.images.length > 0) {
@@ -5151,8 +5586,19 @@ The user has CONFIRMED and VALIDATED your plan.
         let librarianTurnsCount = 0;
         const maxLibrarianTurns = this._discussionCapabilities.librarianDebateTurns ?? 2;
 
-        const runTurn = async () => {
-            if (controller?.signal.aborted || currentTurnIndex >= maxTurnsLimit) return;
+        const runTurn = async (isInsideMultiPhaseExecution: boolean = false) => {
+            if (controller?.signal.aborted || currentTurnIndex >= maxTurnsLimit) {
+                if (currentTurnIndex >= maxTurnsLimit && !controller?.signal.aborted) {
+                    const limitNotice = `\n\n🛑 **AUTO-MODE ROUND LIMIT REACHED** (${maxTurnsLimit} rounds). Automation halted. Review the results above and continue manually if needed.`;
+                    currentFullResponseBuffer += limitNotice;
+                    fullResponse = currentFullResponseBuffer;
+                    await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer);
+                    if (!this._isDisposed && !this._activeMultiPartPlan) {
+                        this._panel.webview.postMessage({ command: 'finalizeMessage', id: assistantMessageId, fullContent: currentFullResponseBuffer });
+                    }
+                }
+                return;
+            }
             currentTurnIndex++;
 
             if (consecutiveFailsCount >= maxFailsAllowed) {
@@ -5197,9 +5643,13 @@ The user has CONFIRMED and VALIDATED your plan.
             try {
                 await this._lollmsAPI.sendChat(loopMessages, (chunk) => {
                     if (controller?.signal.aborted) return;
+                    if (firstTokenTimestamp === undefined) {
+                        firstTokenTimestamp = Date.now();
+                    }
                     turnResponse += chunk;
                     currentFullResponseBuffer += chunk;
                     fullResponse = currentFullResponseBuffer;
+                    this.updateThinkTimingsFromBuffer(currentFullResponseBuffer, thinkTimings, firstTokenTimestamp);
 
                     this._panel.webview.postMessage({ 
                         command: 'appendMessageChunk', 
@@ -5224,15 +5674,17 @@ The user has CONFIRMED and VALIDATED your plan.
                 throw abortErr;
             }
 
-            // 3. Post-stream parsing & execution
-            // If AUTO-EXECUTE TOOLS is disabled (and not in agent mode):
-            // STRICT SINGLE SHOT! Do NOT execute tools or recurse.
-            // Tags (<add_files_to_context>, <unmute_files>, etc.) are rendered in the chat bubble for the user to execute manually.
-            const shouldAutoExecuteTools =
-                this._discussionCapabilities.autoExecuteTools === true ||
-                this._currentDiscussion?.capabilities?.autoExecuteTools === true ||
-                this._discussionCapabilities.agentMode === true;
-            if (!shouldAutoExecuteTools || forceFinalAnswerNoTools) {
+            const requiresEndTagCap = (this._discussionCapabilities as any).requireExplicitEndTag === true ||
+                (this._currentDiscussion?.capabilities as any)?.requireExplicitEndTag === true;
+            const strippedForEndTag = stripThinkingTags(turnResponse)
+                .replace(/<file\b[^>]*>[\s\S]*?(?:<\/file>|$)/gi, '')
+                .replace(/```[\s\S]*?(?:```|$)/g, '')
+                .replace(/`[^`\r\n]+`/g, '');
+            const turnEndTagged = /<(?:\/?(?:end|done))\b[^>]*>/i.test(strippedForEndTag);
+
+            // Rule 2: If Auto Mode is OFF (and explicit end tag is not required), do a single round and let the user decide what to do and manually press buttons.
+            if ((!isAutoModeActive && !requiresEndTagCap && !this._discussionCapabilities.autoApply) || forceFinalAnswerNoTools) {
+                const finalThinkDurations = this.finalizeThinkTimings(thinkTimings);
                 const cleanFinalText = stripThinkingTags(currentFullResponseBuffer).trim();
                 const finalAssistantMessage: ChatMessage = {
                     id: assistantMessageId,
@@ -5240,7 +5692,8 @@ The user has CONFIRMED and VALIDATED your plan.
                     content: cleanFinalText,
                     model: targetModel,
                     personalityName: personaName,
-                    timestamp: Date.now()
+                    timestamp: Date.now(),
+                    ...(finalThinkDurations.length > 0 ? { thinkDurations: finalThinkDurations } : {})
                 };
 
                 const msgIdx = this._currentDiscussion!.messages.findIndex(m => m.id === assistantMessageId);
@@ -5262,7 +5715,9 @@ The user has CONFIRMED and VALIDATED your plan.
                         this._panel.webview.postMessage({ 
                             command: 'finalizeMessage', 
                             id: assistantMessageId, 
-                            fullContent: currentFullResponseBuffer 
+                            fullContent: currentFullResponseBuffer,
+                            appliedState: this._currentDiscussion?.appliedState?.[assistantMessageId],
+                            ...(finalThinkDurations.length > 0 ? { thinkDurations: finalThinkDurations } : {})
                         });
                     }
                     this._panel.webview.postMessage({ command: 'collapseLibrarianMessages' });
@@ -5270,19 +5725,26 @@ The user has CONFIRMED and VALIDATED your plan.
                 return;
             }
 
-            const scannableTurn = stripThinkingTags(turnResponse);
+            let strippedTurn = stripThinkingTags(turnResponse);
+            // Guard against dangling </think> when the model omitted the opening <think> tag
+            const danglingThinkClose = strippedTurn.match(/^[ \t]*<\/(?:think|thinking|thought|analysis|reasoning)>[ \t]*$/im);
+            if (danglingThinkClose && danglingThinkClose.index !== undefined) {
+                strippedTurn = strippedTurn.substring(danglingThinkClose.index + danglingThinkClose[0].length).trimStart();
+            }
+            const scannableTurn = normalizePseudoFileBlocks(strippedTurn);
             const protectedRanges: { start: number, end: number }[] = [];
 
-            // Protect <file> mutation blocks so code examples/contents inside them are never parsed as tools
-            const fileTagProtectRegex = /^[ \t]*<file\b[^>]*>[\s\S]*?(?:<\/file>|$)/gim;
-            let fileProtMatch: RegExpExecArray | null;
-            while ((fileProtMatch = fileTagProtectRegex.exec(scannableTurn)) !== null) {
-                protectedRanges.push({ start: fileProtMatch.index, end: fileProtMatch.index + fileProtMatch[0].length });
+            // Protect closed <file> mutation blocks (unclosed malformed <file> tags must not swallow subsequent tool calls)
+            const extractedFilesInTurn = extractFileBlocks(scannableTurn);
+            for (const fb of extractedFilesInTurn) {
+                if (fb.isClosed) {
+                    protectedRanges.push({ start: fb.start, end: fb.end });
+                }
             }
 
-            // Protect fenced code blocks unless the fence only wraps a Lollms tool tag
-            const toolTagNamesPattern = /^(?:add_files_to_context|remove_files_from_context|mute_files|unmute_files|load_knowledge|update_knowledge|unpack_directory|load_structure|read_definitions|show_symbol|get_symbol_code|read_symbol|peek_files|read_full_file|read_file|read_external_file|grep|grep_search|search_files|manage_symbols|query_architecture|sparql|run_tests|lollms_tool)\b/i;
-            const fenceRegex = /```([a-zA-Z0-9_\-]*)[ \t]*\r?\n([\s\S]*?)(?:```|$)/g;
+            // Protect closed fenced code blocks unless the fence only wraps a Lollms tool or form tag
+            const toolTagNamesPattern = /^(?:add_files_to_context|remove_files_from_context|mute_files|unmute_files|load_knowledge|update_knowledge|unpack_directory|load_structure|read_definitions|show_symbol|get_symbol_code|read_symbol|peek_files|read_full_file|read_file|read_external_file|grep|grep_search|search_files|manage_symbols|query_architecture|sparql|run_tests|lollms_tool|execute_code|lollms_form)\b/i;
+            const fenceRegex = /```([a-zA-Z0-9_\-]*)[ \t]*\r?\n([\s\S]*?)```/g;
             let fMatch: RegExpExecArray | null;
             while ((fMatch = fenceRegex.exec(scannableTurn)) !== null) {
                 const langHint = (fMatch[1] || '').toLowerCase();
@@ -5306,7 +5768,7 @@ The user has CONFIRMED and VALIDATED your plan.
                 return protectedRanges.some(r => index >= r.start && index < r.end);
             };
 
-            const linePrefix = `(?:^[ \\t]*(?:(?:[-*+]|\\d+\\.)[ \\t]+)?|(?<=>)[ \\t]*)`;
+            const linePrefix = `(?:^[ \\t]*(?:(?:[-*+]|\\d+\\.)[ \\t]+|>[ \\t]*)?|(?<=[>:.!?])[ \\t]*)`;
             const patterns = [
                 { tag: 'add_files_to_context', pattern: new RegExp(`${linePrefix}<add_files_to_context\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/add_files_to_context>)`, 'gim') },
                 { tag: 'remove_files_from_context', pattern: new RegExp(`${linePrefix}<remove_files_from_context\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/remove_files_from_context>)`, 'gim') },
@@ -5325,8 +5787,14 @@ The user has CONFIRMED and VALIDATED your plan.
                 { tag: 'query_architecture', pattern: new RegExp(`${linePrefix}<query_architecture\\b([^>]*?)>([\\s\\S]*?)<\\/query_architecture>`, 'gim') },
                 { tag: 'sparql', pattern: new RegExp(`${linePrefix}<sparql\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/sparql>)`, 'gim') },
                 { tag: 'run_tests', pattern: new RegExp(`${linePrefix}<run_tests\\b([^>]*?)(?:\\/>|>(?:([\\s\\S]*?)<\\/run_tests>)?)`, 'gim') },
-                { tag: 'lollms_tool', pattern: new RegExp(`${linePrefix}<lollms_tool\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/lollms_tool>)`, 'gim') }
-            ];
+                { tag: 'lollms_tool', pattern: new RegExp(`${linePrefix}<lollms_tool\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/lollms_tool>)`, 'gim') },
+                { tag: 'execute_code', pattern: new RegExp(`${linePrefix}<execute_code\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/execute_code>)`, 'gim') }
+            ].filter(p => {
+                if (p.tag !== 'execute_code') return true;
+                const allowCodeExec = this._discussionCapabilities.allowCodeExecution === true || (this._currentDiscussion?.capabilities as any)?.allowCodeExecution === true;
+                const autoExecCode = this._discussionCapabilities.autoExecuteCode === true || (this._currentDiscussion?.capabilities as any)?.autoExecuteCode === true;
+                return allowCodeExec && autoExecCode;
+            });
 
             interface DiscoveredAction {
                 index: number;
@@ -5355,9 +5823,160 @@ The user has CONFIRMED and VALIDATED your plan.
 
             discoveredActions.sort((a, b) => a.index - b.index);
 
+            const prefixBufferBeforeTurn = currentFullResponseBuffer.slice(0, Math.max(0, currentFullResponseBuffer.length - turnResponse.length));
+            const priorBlockOffsets = countCodeBlocksInBuffer(prefixBufferBeforeTurn);
+            const turnBlockCounts = countCodeBlocksInBuffer(scannableTurn);
+            const hasDeleteFilesInTurn = this._discussionCapabilities.fileDelete !== false &&
+                /(?:^[ \t]*|(?<=>)[ \t]*)<(?:delete_files|delete_file)\b/im.test(scannableTurn);
+            const turnHasFileUpdates = turnBlockCounts.xmlCount > 0 || turnBlockCounts.fencedCount > 0 || hasDeleteFilesInTurn;
 
+            const lollmsFormRegex = /<lollms_form\b[^>]*>[\s\S]*?<\/lollms_form>/gi;
+            const htmlFormRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<form\b[^>]*>[\s\S]*?<\/form>/gim;
+            let turnHasForm = false;
+            let formMatchCheck: RegExpExecArray | null;
+            while ((formMatchCheck = lollmsFormRegex.exec(scannableTurn)) !== null) {
+                if (!isIndexInsideFence(formMatchCheck.index)) {
+                    turnHasForm = true;
+                    break;
+                }
+            }
+            if (!turnHasForm) {
+                while ((formMatchCheck = htmlFormRegex.exec(scannableTurn)) !== null) {
+                    if (!isIndexInsideFence(formMatchCheck.index)) {
+                        turnHasForm = true;
+                        break;
+                    }
+                }
+            }
 
-            if (discoveredActions.length > 0) {
+            // If an interactive form is detected, stop rounding immediately and wait for the user to answer
+            if (turnHasForm) {
+                formDetectedInTurn = true;
+                this.log(`[Auto Mode] Interactive form detected: stopping rounds and waiting for user answer.`, 'INFO');
+                const finalThinkDurations = this.finalizeThinkTimings(thinkTimings);
+                const finalAssistantMessage: ChatMessage = {
+                    id: assistantMessageId,
+                    role: 'assistant',
+                    content: currentFullResponseBuffer.trim(),
+                    model: targetModel,
+                    personalityName: personaName,
+                    timestamp: Date.now(),
+                    ...(finalThinkDurations.length > 0 ? { thinkDurations: finalThinkDurations } : {})
+                };
+
+                const msgIdx = this._currentDiscussion!.messages.findIndex(m => m.id === assistantMessageId);
+                if (msgIdx !== -1) {
+                    this._currentDiscussion!.messages[msgIdx] = finalAssistantMessage;
+                }
+                if (this._currentDiscussion!.llmHistory) {
+                    const llmIdx = this._currentDiscussion!.llmHistory.findIndex(m => m.id === assistantMessageId);
+                    if (llmIdx !== -1) {
+                        this._currentDiscussion!.llmHistory[llmIdx] = finalAssistantMessage;
+                    }
+                }
+                if (!this._currentDiscussion!.id.startsWith('temp-')) {
+                    await this._discussionManager.saveDiscussion(this._currentDiscussion!);
+                }
+
+                if (!this._isDisposed) {
+                    if (!this._activeMultiPartPlan) {
+                        this._panel.webview.postMessage({ 
+                            command: 'finalizeMessage', 
+                            id: assistantMessageId, 
+                            fullContent: currentFullResponseBuffer,
+                            ...(finalThinkDurations.length > 0 ? { thinkDurations: finalThinkDurations } : {})
+                        });
+                    }
+                }
+                forceFinalAnswerNoTools = true;
+                return;
+            }
+
+            // If <delete_files> was demanded, do NOT execute any auto execution — prompt the user and stop there
+            if (hasDeleteFilesInTurn) {
+                this.log(`[Auto Mode] <delete_files> detected: halting auto execution to prompt user.`, 'INFO');
+                const cleanFinalText = stripThinkingTags(currentFullResponseBuffer).trim();
+                const finalAssistantMessage: ChatMessage = {
+                    id: assistantMessageId,
+                    role: 'assistant',
+                    content: cleanFinalText,
+                    model: targetModel,
+                    personalityName: personaName,
+                    timestamp: Date.now()
+                };
+                const msgIdx = this._currentDiscussion!.messages.findIndex(m => m.id === assistantMessageId);
+                if (msgIdx !== -1) this._currentDiscussion!.messages[msgIdx] = finalAssistantMessage;
+                if (this._currentDiscussion!.llmHistory) {
+                    const llmIdx = this._currentDiscussion!.llmHistory.findIndex(m => m.id === assistantMessageId);
+                    if (llmIdx !== -1) this._currentDiscussion!.llmHistory[llmIdx] = finalAssistantMessage;
+                }
+                if (!this._currentDiscussion!.id.startsWith('temp-')) {
+                    await this._discussionManager.saveDiscussion(this._currentDiscussion!);
+                }
+                if (!this._isDisposed) {
+                    this._panel.webview.postMessage({
+                        command: 'finalizeMessage',
+                        id: assistantMessageId,
+                        fullContent: currentFullResponseBuffer,
+                        appliedState: this._currentDiscussion?.appliedState?.[assistantMessageId]
+                    });
+                    this._panel.webview.postMessage({ command: 'collapseLibrarianMessages' });
+                }
+                forceFinalAnswerNoTools = true;
+                return;
+            }
+
+            // Rule 1.5 continuation: If the coder responded with a multi-phase <plan> (and no patches/tools), spin off multi-phase execution
+            if (!isInsideMultiPhaseExecution && !turnHasFileUpdates && discoveredActions.length === 0) {
+                const coderPlan = parseCoderMultiPhasePlan(scannableTurn);
+                if (coderPlan && coderPlan.parts.length > 0) {
+                    this.log(`[Auto Mode - Rule 1.5] Coder generated a ${coderPlan.parts.length}-phase execution plan. Starting sequential phases...`, 'INFO');
+                    this._activeMultiPartPlan = {
+                        totalParts: coderPlan.parts.length,
+                        currentPartIndex: 0,
+                        parts: coderPlan.parts
+                    };
+                    multiPhaseStartedFromCoderPlan = true;
+                    await this.updateMessage(assistantMessageId, currentFullResponseBuffer);
+                    return;
+                }
+            }
+
+            // Rule 1.4 & 1.2: Whenever there are file updates and Auto-Apply (or Agent Mode) is ON, apply & auto-fix them FIRST
+            let turnPatchReport = "";
+            const shouldAutoApplyTurn = this._discussionCapabilities.autoApply === true || this._discussionCapabilities.agentMode === true;
+            if (turnHasFileUpdates && shouldAutoApplyTurn) {
+                const verification = await this.verifyGeneratedPatchContext(turnResponse);
+                if (!verification.valid) {
+                    if (discoveredActions.length === 0) {
+                        this.log(`[Auto Mode - Rule 1.2] Blind patch blocked on unseen files: [${verification.unpossessedFiles.join(', ')}]`, 'WARN');
+                        await this.handleContextVerifierFailure(verification.unpossessedFiles, isFastMode, controller.signal, processId);
+                        patchesAppliedInLoop = true;
+                        return;
+                    } else {
+                        turnPatchReport = `⚠️ **Patch Notice**: Skipped file updates for unseen file(s) [${verification.unpossessedFiles.join(', ')}] until they are loaded into active context [C].\n`;
+                    }
+                } else {
+                    this.processManager.updateDescription(processId, `Auto Mode: Applying & verifying file updates...`);
+                    this.updateGeneratingState();
+                    const pipeRes = await this.executeAutomationPipeline(turnResponse, assistantMessageId, controller.signal, processId, {
+                        xmlBlockIndexOffset: priorBlockOffsets.xmlCount,
+                        fencedBlockIndexOffset: priorBlockOffsets.fencedCount,
+                        skipContextTools: discoveredActions.length > 0,
+                        autoFix: this._discussionCapabilities.autoFix !== false,
+                        skipGuardianRepairLoop: isInsideMultiPhaseExecution || discoveredActions.length > 0
+                    });
+                    patchesAppliedInLoop = true;
+                    if (pipeRes.modifiedFiles.length > 0) {
+                        const failedDesc = pipeRes.failedPatches.length > 0
+                            ? ` Failed patches: ${pipeRes.failedPatches.map(fp => `${fp.filePath} (${fp.error})`).join('; ')}.`
+                            : '';
+                        turnPatchReport = `✅ **Patches Applied (${pipeRes.appliedCount})**: [${pipeRes.modifiedFiles.join(', ')}] saved on disk.${failedDesc}\n`;
+                    }
+                }
+            }
+
+            if (discoveredActions.length > 0 && isAutoModeActive) {
                 const batchFingerprint = discoveredActions.map(a => `${a.tag}:${a.params}`).join('|');
                 const priorFingerprintCount = executedFingerprintCounts.get(batchFingerprint) || 0;
                 const isDuplicateRepetition = (batchFingerprint === lastExecutedFingerprint) || priorFingerprintCount >= 1;
@@ -5433,7 +6052,9 @@ The user has CONFIRMED and VALIDATED your plan.
                                 } else if (allowedToLoad.length === 0 && thrashingFiles.length > 0) {
                                     consecutiveCompressionLoopCount++;
                                     isSuccess = false;
-                                    toolResult = `Error: CONTEXT THRASHING BLOCKED for [${thrashingFiles.join(', ')}]. These files were recently compacted/muted by the Context Manager due to token budget limits or requested repeatedly without freeing space.\n\n**MANDATORY PHASED APPROACH:**\n1. Do NOT attempt to load all files at once.\n2. Work in **phases**: keep only a small subset (1–3 files) active, emit your \`<file>\` edits or analysis for them, then call \`<mute_files>\` on finished files BEFORE requesting the next subset.\n3. For targeted lookups in other files, use \`<show_symbol target="file:SymbolName" />\` or \`<peek_files path="file" lines="30" />\` instead of loading entire files.`;
+                                    const curTotalTok = this._currentDiscussion?.lastTokenMetrics?.total || 0;
+                                    const curMaxTok = this._currentDiscussion?.lastTokenMetrics?.contextSize || 128000;
+                                    toolResult = `Error: CONTEXT THRASHING BLOCKED for [${thrashingFiles.join(', ')}]. These files were recently compacted/muted by the Context Manager due to token budget limits (~${curTotalTok.toLocaleString()} / ${curMaxTok.toLocaleString()} tokens) or requested repeatedly without freeing space.\n\n**PLEASE OPTIMIZE YOUR CONTEXT FIRST:**\n1. **Mute or Remove Useless/Finished Files**: Call \`<mute_files>\\npath/to/finished_or_irrelevant.ext\\n</mute_files>\` or \`<remove_files_from_context>\` on files you no longer need.\n2. **Collapse Large Files into Symbols**: Use \`<manage_symbols path="path/to/large_file.ext" activate="SymA, SymB" />\` to collapse bloated files into structure while keeping only the few symbols you need intact (you can directly update loaded symbols with \`action="update_symbol"\` without loading the full file).\n3. **Targeted Lookups**: Use \`<show_symbol target="file:SymbolName" />\` or \`<peek_files path="file" lines="30" />\` instead of loading entire files.`;
                                     completedDynamicActions.push(`Blocked context thrashing loop on [${thrashingFiles.join(', ')}].`);
                                 } else {
                                     if (thrashingFiles.length > 0) {
@@ -5554,6 +6175,10 @@ The user has CONFIRMED and VALIDATED your plan.
                                 completedDynamicActions.push(allOk ? `Unpacked directory: ${rawDirs.join(', ')}.` : `Failed to unpack: ${rawDirs.join(', ')}.`);
                             }
                         } else if (action.tag === 'peek_files') {
+                            toolResult = "Error: <peek_files> is disabled for the Coder. Use <load_structure path=\"...\" /> to inspect file structure and <show_symbol target=\"file:SymbolName\" /> or <manage_symbols> to expand specific symbols.";
+                            isSuccess = false;
+                            completedDynamicActions.push(`Blocked <peek_files> (use <load_structure> / <show_symbol>).`);
+                        } else if (false && action.tag === 'peek_files') {
                             const rawAttr = action.attrStr || "";
                             const rawInner = action.params || "";
                             const rawPaths: string[] = [];
@@ -5714,6 +6339,11 @@ The user has CONFIRMED and VALIDATED your plan.
                             toolDisplayName = reqPath || 'list linked external files';
                             completedDynamicActions.push(`Read external file: ${toolDisplayName}`);
                         } else if (action.tag === 'grep') {
+                            if (this._discussionCapabilities.grepEnabled === false) {
+                                toolResult = "Error: <grep> is currently disabled in the HUD. Enable GREP in HUD options to use it.";
+                                isSuccess = false;
+                                completedDynamicActions.push(`Blocked <grep> (disabled in HUD).`);
+                            } else {
                             const attrStr = `${action.attrStr || ''} ${action.params || ''}`.trim();
                             const pMatch = attrStr.match(/(?:pattern|query)=["']([^"']+)["']/i);
                             const pattern = (pMatch ? pMatch[1] : (action.params || '').split(/[\r\n]+/)[0]).replace(/^['"]|['"]$/g, '').trim();
@@ -5739,6 +6369,7 @@ The user has CONFIRMED and VALIDATED your plan.
                                     isSuccess = true;
                                     completedDynamicActions.push(`Grepped for: "${pattern}" (0 hits)`);
                                 }
+                            }
                             }
                         } else if (action.tag === 'load_knowledge') {
                             const secPath = action.params.trim();
@@ -5814,12 +6445,18 @@ The user has CONFIRMED and VALIDATED your plan.
                                 completedDynamicActions.push(`Updated symbol visibility for ${filePath}`);
                             }
                         } else if (action.tag === 'query_architecture' || action.tag === 'sparql') {
-                            const combinedSparql = `${action.attrStr || ''}`.match(/query=["']([\s\S]*?)["']/i)?.[1] || action.params;
-                            const sparql = combinedSparql.trim();
-                            const rawResult = await (this.agentManager as any).codeGraphManager.executeSparql(sparql);
-                            toolResult = rawResult || "No matches.";
-                            isSuccess = !rawResult.includes("Error");
-                            completedDynamicActions.push(`Executed SPARQL query`);
+                            if (this._discussionCapabilities.sparqlEnabled === false) {
+                                toolResult = "Error: <sparql> / <query_architecture> is currently disabled in the HUD. Enable SPARQL in HUD options to use it.";
+                                isSuccess = false;
+                                completedDynamicActions.push(`Blocked <sparql> (disabled in HUD).`);
+                            } else {
+                                const combinedSparql = `${action.attrStr || ''}`.match(/query=["']([\s\S]*?)["']/i)?.[1] || action.params;
+                                const sparql = combinedSparql.trim();
+                                const rawResult = await (this.agentManager as any).codeGraphManager.executeSparql(sparql);
+                                toolResult = rawResult || "No matches.";
+                                isSuccess = !rawResult.includes("Error");
+                                completedDynamicActions.push(`Executed SPARQL query`);
+                            }
                         } else if (action.tag === 'run_tests') {
                             const attrStr = action.attrStr || "";
                             const rawInner = action.params || "";
@@ -5866,6 +6503,75 @@ The user has CONFIRMED and VALIDATED your plan.
                             toolResult = testRes.output;
                             isSuccess = testRes.success;
                             completedDynamicActions.push(`Ran tests on [${targets.join(', ')}]: ${isSuccess ? 'PASSED' : 'FAILED'}`);
+                        } else if (action.tag === 'execute_code') {
+                            const langMatch = (action.attrStr || '').match(/\blang=["']?([\w\-\+#.]+)["']?/i);
+                            const lang = (langMatch ? langMatch[1] : 'bash').toLowerCase();
+                            const codeBody = action.params.trim();
+                            toolDisplayName = lang;
+
+                            if (!codeBody) {
+                                toolResult = "Error: Empty <execute_code> body — nothing to execute.";
+                                isSuccess = false;
+                            } else {
+                                const { execFile } = require('child_process');
+                                const os = require('os');
+                                const pathMod = require('path');
+                                const fsMod = require('fs');
+                                const stamp = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+                                let scriptPath = '';
+                                let cmd = '';
+                                let cmdArgs: string[] = [];
+                                let isInlineShell = false;
+
+                                try {
+                                    if (lang === 'python' || lang === 'python3' || lang === 'py') {
+                                        scriptPath = pathMod.join(os.tmpdir(), `lollms_exec_${stamp}.py`);
+                                        fsMod.writeFileSync(scriptPath, codeBody, 'utf8');
+                                        cmd = process.platform === 'win32' ? 'python' : 'python3';
+                                        cmdArgs = [scriptPath];
+                                    } else if (lang === 'node' || lang === 'nodejs' || lang === 'javascript' || lang === 'js') {
+                                        scriptPath = pathMod.join(os.tmpdir(), `lollms_exec_${stamp}.js`);
+                                        fsMod.writeFileSync(scriptPath, codeBody, 'utf8');
+                                        cmd = 'node';
+                                        cmdArgs = [scriptPath];
+                                    } else {
+                                        // shell / bash / powershell / cmd / plaintext fallback
+                                        cmd = process.platform === 'win32' ? 'powershell' : 'bash';
+                                        if (process.platform === 'win32') {
+                                            cmdArgs = ['-NoProfile', '-NonInteractive', '-Command', codeBody];
+                                            isInlineShell = true;
+                                        } else {
+                                            scriptPath = pathMod.join(os.tmpdir(), `lollms_exec_${stamp}.sh`);
+                                            fsMod.writeFileSync(scriptPath, codeBody, 'utf8');
+                                            cmdArgs = [scriptPath];
+                                        }
+                                    }
+
+                                    const execRes = await new Promise<{ stdout: string; stderr: string; code: number }>((resolve) => {
+                                        execFile(cmd, cmdArgs, { cwd: folders?.[0]?.uri.fsPath, encoding: 'utf8', timeout: 60000, maxBuffer: 1024 * 1024 }, (err: any, stdout: string, stderr: string) => {
+                                            resolve({ stdout: stdout || '', stderr: stderr || '', code: err ? (typeof err.code === 'number' ? err.code : 1) : 0 });
+                                        });
+                                    });
+
+                                    const trim = (s: string, n: number) => {
+                                        if (s.length <= n) return s;
+                                        const head = Math.floor(n * 0.2);
+                                        const tail = n - head;
+                                        return s.slice(0, head) + `\n... [${s.length - n} chars truncated] ...\n` + s.slice(s.length - tail);
+                                    };
+                                    const out = trim(execRes.stdout, 20000);
+                                    const errOut = trim(execRes.stderr, 6000);
+                                    isSuccess = execRes.code === 0;
+                                    toolResult = `### ⚡ EXECUTE_CODE (${lang}) — Exit Code: ${execRes.code}\n**stdout:**\n\`\`\`\n${out || '(empty)'}\n\`\`\`\n${errOut ? `**stderr:**\n\`\`\`\n${errOut}\n\`\`\`\n` : ''}`;
+                                    completedDynamicActions.push(`Executed ${lang} code (exit ${execRes.code}).`);
+                                } catch (execErr: any) {
+                                    toolResult = `Error executing <execute_code lang="${lang}">: ${execErr.message}`;
+                                    isSuccess = false;
+                                    completedDynamicActions.push(`Crashed executing ${lang} code.`);
+                                } finally {
+                                    try { if (scriptPath && !isInlineShell && fsMod.existsSync(scriptPath)) fsMod.unlinkSync(scriptPath); } catch {}
+                                }
+                            }
                         } else if (action.tag === 'lollms_tool') {
                             const attrStr = action.attrStr || "";
                             const rawJson = action.params.trim();
@@ -5957,45 +6663,60 @@ The user has CONFIRMED and VALIDATED your plan.
 
                     const summaryColor = isSuccess ? '' : 'color:var(--vscode-charts-red);';
                     const headerPrefix = isSuccess ? 'Action Complete' : 'Action Failed';
+                    // Escape container HTML tags inside tool output so raw </details>/</div>/<file>/<think> never break the processing-block DOM
+                    const safeToolResult = String(toolResult || '').replace(/<\/?(?:details|div|summary|file|think|thinking|thought|analysis|reasoning)\b[^>]*>/gi, (m) =>
+                        m.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                    );
                     let blockWidgetHtml = "";
 
                     if (action.tag === 'add_files_to_context') {
                         const filesToAdd = action.params.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
-                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-cloud-download' : 'codicon-error'}"></i> ${isSuccess ? 'Loaded Files Context' : 'File Loading Notice'}: ${filesToAdd.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-cloud-download' : 'codicon-error'}"></i> ${isSuccess ? 'Loaded Files Context' : 'File Loading Notice'}: ${filesToAdd.join(', ')}</summary><div class="processing-body">${safeToolResult}</div></details>\n\n`;
                     } else if (action.tag === 'mute_files') {
                         const files = action.params.split(/[\s\r\n,]+/).map(f => f.trim()).filter(Boolean);
-                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-eye-closed"></i> Muted Files: ${files.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-eye-closed"></i> Muted Files: ${files.join(', ')}</summary><div class="processing-body">${safeToolResult}</div></details>\n\n`;
                     } else if (action.tag === 'unmute_files') {
                         const files = action.params.split(/[\s\r\n,]+/).map(f => f.trim()).filter(Boolean);
-                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-eye"></i> Unmuted Files: ${files.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-eye"></i> Unmuted Files: ${files.join(', ')}</summary><div class="processing-body">${safeToolResult}</div></details>\n\n`;
                     } else if (action.tag === 'load_knowledge') {
-                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-book"></i> Knowledge Loaded: ${action.params}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-book"></i> Knowledge Loaded: ${action.params}</summary><div class="processing-body">${safeToolResult}</div></details>\n\n`;
                     } else if (action.tag === 'update_knowledge') {
-                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-pass-filled"></i> Knowledge Synchronized: ${action.params.substring(0, 30)}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-pass-filled"></i> Knowledge Synchronized: ${action.params.substring(0, 30)}</summary><div class="processing-body">${safeToolResult}</div></details>\n\n`;
                     } else if (action.tag === 'remove_files_from_context') {
                         const filesToRemove = action.params.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
-                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-trash' : 'codicon-error'}"></i> ${isSuccess ? 'Pruned Files Context' : 'Pruning Failed'}: ${filesToRemove.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-trash' : 'codicon-error'}"></i> ${isSuccess ? 'Pruned Files Context' : 'Pruning Failed'}: ${filesToRemove.join(', ')}</summary><div class="processing-body">${safeToolResult}</div></details>\n\n`;
                     } else if (action.tag === 'load_structure') {
-                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-symbol-class' : 'codicon-error'}"></i> ${isSuccess ? 'Structure &amp; Signatures Loaded' : 'Structure Request Failed'}: ${action.params.substring(0, 60)}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-symbol-class' : 'codicon-error'}"></i> ${isSuccess ? 'Structure &amp; Signatures Loaded' : 'Structure Request Failed'}: ${action.params.substring(0, 60)}</summary><div class="processing-body">${safeToolResult}</div></details>\n\n`;
                     } else if (action.tag === 'unpack_directory') {
                         const dirs = action.params.split(/[\s\r\n,]+/).map((f: string) => f.trim()).filter((f: string) => f);
-                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-folder-opened' : 'codicon-error'}"></i> ${isSuccess ? 'Unpacked Directory' : 'Directory Unpack Notice'}: ${dirs.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-folder-opened' : 'codicon-error'}"></i> ${isSuccess ? 'Unpacked Directory' : 'Directory Unpack Notice'}: ${dirs.join(', ')}</summary><div class="processing-body">${safeToolResult}</div></details>\n\n`;
                     } else if (action.tag === 'peek_files') {
                         const files = action.params.split(/[\s\r\n,]+/).map((f: string) => f.trim()).filter((f: string) => f);
-                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-eye' : 'codicon-error'}"></i> ${isSuccess ? 'Inspected Files (Live)' : 'Peek Notice'}: ${files.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-eye' : 'codicon-error'}"></i> ${isSuccess ? 'Inspected Files (Live)' : 'Peek Notice'}: ${files.join(', ')}</summary><div class="processing-body">${safeToolResult}</div></details>\n\n`;
                     } else if (action.tag === 'read_full_file') {
-                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-file' : 'codicon-error'}"></i> Read File: ${action.params.substring(0, 50)}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-file' : 'codicon-error'}"></i> Read File: ${action.params.substring(0, 50)}</summary><div class="processing-body">${safeToolResult}</div></details>\n\n`;
                     } else if (action.tag === 'read_external_file') {
-                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-link' : 'codicon-error'}"></i> Read External File: ${toolDisplayName}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-link' : 'codicon-error'}"></i> Read External File: ${toolDisplayName}</summary><div class="processing-body">${safeToolResult}</div></details>\n\n`;
                     } else if (action.tag === 'grep') {
-                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-search' : 'codicon-error'}"></i> Grep Code Search: ${action.params.substring(0, 50)}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-search' : 'codicon-error'}"></i> Grep Code Search: ${action.params.substring(0, 50)}</summary><div class="processing-body">${safeToolResult}</div></details>\n\n`;
                     } else if (action.tag === 'query_architecture' || action.tag === 'sparql') {
                         const sparql = action.params.trim();
-                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-graph"></i> ${isSuccess ? 'Architecture Query (SPARQL)' : 'SPARQL Query Failed'}</summary><div class="processing-body">\`\`\`sparql\n${sparql}\n\`\`\`\n\n**Result:**\n${toolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-graph"></i> ${isSuccess ? 'Architecture Query (SPARQL)' : 'SPARQL Query Failed'}</summary><div class="processing-body">\`\`\`sparql\n${sparql}\n\`\`\`\n\n**Result:**\n${safeToolResult}</div></details>\n\n`;
                     } else if (action.tag === 'run_tests') {
-                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-beaker"></i> ${isSuccess ? 'Tests Passed' : 'Tests Failed'}: ${toolDisplayName}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-beaker"></i> ${isSuccess ? 'Tests Passed' : 'Tests Failed'}: ${toolDisplayName}</summary><div class="processing-body">${safeToolResult}</div></details>\n\n`;
                     } else {
-                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-tools"></i> ${headerPrefix}: ${toolDisplayName}</summary><div class="processing-body">**Output:**\n${toolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-tools"></i> ${headerPrefix}: ${toolDisplayName}</summary><div class="processing-body">**Output:**\n${safeToolResult}</div></details>\n\n`;
+                    }
+
+                    // Ensure any dangling unclosed code fence or think tag from turnResponse does not swallow blockWidgetHtml
+                    const fenceCount = (currentFullResponseBuffer.match(/^[ \t]*```/gm) || []).length;
+                    if (fenceCount % 2 !== 0) {
+                        currentFullResponseBuffer += '\n```\n';
+                    }
+                    const openThinkMatches = currentFullResponseBuffer.match(/<(think|thinking|thought|analysis|reasoning)\b[^>]*>/gi) || [];
+                    const closeThinkMatches = currentFullResponseBuffer.match(/<\/(think|thinking|thought|analysis|reasoning)>/gi) || [];
+                    if (openThinkMatches.length > closeThinkMatches.length) {
+                        currentFullResponseBuffer += '\n</think>\n';
                     }
 
                     currentFullResponseBuffer += blockWidgetHtml;
@@ -6071,6 +6792,21 @@ The user has CONFIRMED and VALIDATED your plan.
                     loopTransientTurns = [...olderTransient, ...loopTransientTurns.slice(-2)];
                 }
 
+                if (turnPatchReport && typeof batchUserMsg.content === 'string') {
+                    batchUserMsg.content = `${turnPatchReport}\n${batchUserMsg.content}`;
+                }
+
+                const hasContextExpandingTools = discoveredActions.some(a =>
+                    a.tag === 'add_files_to_context' ||
+                    a.tag === 'unmute_files' ||
+                    a.tag === 'load_structure' ||
+                    a.tag === 'manage_symbols' ||
+                    a.tag === 'read_full_file' ||
+                    a.tag === 'show_symbol' ||
+                    a.tag === 'peek_files' ||
+                    a.tag === 'unpack_directory'
+                );
+
                 const transientTokens = Math.ceil(getTransientChars(loopTransientTurns) / 3.5);
                 const turnProtectedFiles = Array.from(new Set([...activePhaseTargetFiles, ...turnJustAddedFiles]));
                 const turnBudgetOpt = await this.enforceContextBudgetProtection(
@@ -6087,17 +6823,65 @@ The user has CONFIRMED and VALIDATED your plan.
                 currentContextPayload = turnBudgetOpt.contextData;
                 history = turnBudgetOpt.history;
 
-                if (turnBudgetOpt.cutFiles && turnBudgetOpt.cutFiles.length > 0) {
-                    turnBudgetOpt.cutFiles.forEach(cf => cutByCompressionFiles.add(cf));
-                    if (typeof batchUserMsg.content === 'string') {
-                        batchUserMsg.content += `\n\n> ⚠️ **Context Budget Notice**: To fit the model's context window, the Context Manager compacted/muted: ${turnBudgetOpt.cutFiles.map(f => `\`${f}\``).join(', ')}.\n> **Work in Phases**: Do NOT re-request all cut files at once. Complete your edits/analysis on the currently loaded [C] subset first, call \`<mute_files>\` on finished files before loading the next subset, or use \`<show_symbol>\` / \`<peek_files>\` for targeted lookups.`;
-                    }
-                }
+                const contextExploded = !this._discussionCapabilities.ignoreContextSize &&
+                    hasContextExpandingTools &&
+                    (turnBudgetOpt.exploded || (turnBudgetOpt.cutFiles && turnBudgetOpt.cutFiles.length > 0));
 
-                if (consecutiveCompressionLoopCount >= 2 || (isDuplicateRepetition && !anySuccess)) {
-                    forceFinalAnswerNoTools = true;
+                if (contextExploded && !isInsideMultiPhaseExecution && !requestedMultiPhaseSplit) {
+                    // Rule 1.5: Context size exploded -> ask the coder to split work into phases (Librarian <plan> format)
+                    requestedMultiPhaseSplit = true;
+                    if (turnBudgetOpt.cutFiles) {
+                        turnBudgetOpt.cutFiles.forEach(cf => cutByCompressionFiles.add(cf));
+                    }
+
+                    // Compact any huge tool outputs in batchUserMsg so the planning turn fits comfortably in budget (preserving tail where test summaries live)
+                    if (typeof batchUserMsg.content === 'string' && batchUserMsg.content.length > 10000) {
+                        batchUserMsg.content = batchUserMsg.content.substring(0, 2500) + '\n... [Middle tool output compacted to fit multi-phase planning budget] ...\n' + batchUserMsg.content.slice(-7500);
+                    }
+
+                    const requestedTargetsList = Array.from(new Set([...turnJustAddedFiles, ...(turnBudgetOpt.cutFiles || [])]));
                     if (typeof batchUserMsg.content === 'string') {
-                        batchUserMsg.content += `\n\n### 🛑 CONTEXT LOOP PROTECTION ENGAGED\nAuto-tools execution is paused for your next response to prevent an infinite context-activation loop.\nRespond directly NOW using your currently loaded files: deliver the \`<file>\` edits for this phase, summarize what remains for the next phase, or emit a \`<user_instruction>\` block telling the user what to run or verify.`;
+                        batchUserMsg.content += `\n\n### ⚠️ CONTEXT SIZE EXCEEDED — SPLIT WORK INTO PHASES (MANDATORY)
+The requested context/tool operations pushed the total context size to ~${turnBudgetOpt.initialTotalTokens.toLocaleString()} tokens (exceeding the safe threshold of ~${turnBudgetOpt.triggerBudget.toLocaleString()} / ${turnBudgetOpt.maxTokens.toLocaleString()} tokens).
+To prevent infinite pruning/unmuting loops, **split your work into sequential phases** using the exact \`<plan>\` format below.
+
+**MANDATORY NEXT RESPONSE FORMAT:**
+Output **ONLY** a \`<plan>\` block (do NOT emit \`<unmute_files>\`, \`<add_files_to_context>\`, or \`<file>\` tags in this planning response):
+\`\`\`xml
+<plan>
+    <findings>
+        Briefly summarize what is known so far and why the work is divided into these phases.
+    </findings>
+    <phase id="1">
+        <instruction>Exact tasks and edits to perform in Phase 1</instruction>
+        <files_list>
+            path/to/phase1_file1.ext
+            path/to/phase1_file2.ext
+        </files_list>
+    </phase>
+    <phase id="2">
+        <instruction>Exact tasks and edits to perform in Phase 2</instruction>
+        <files_list>
+            path/to/phase2_file1.ext
+        </files_list>
+    </phase>
+</plan>
+\`\`\`
+Keep each phase focused on a small subset (1–3 files${requestedTargetsList.length > 0 ? ` from: ${requestedTargetsList.map(f => `\`${f}\``).join(', ')}` : ''}) so every phase fits comfortably inside the ~${turnBudgetOpt.triggerBudget.toLocaleString()} token budget.`;
+                    }
+                } else {
+                    if (turnBudgetOpt.cutFiles && turnBudgetOpt.cutFiles.length > 0) {
+                        turnBudgetOpt.cutFiles.forEach(cf => cutByCompressionFiles.add(cf));
+                        if (typeof batchUserMsg.content === 'string') {
+                            batchUserMsg.content += `\n\n> ⚠️ **Context Budget Notice**: To fit the model's context window, the Context Manager compacted/muted: ${turnBudgetOpt.cutFiles.map(f => `\`${f}\``).join(', ')}.\n> **Work in Phases**: Do NOT re-request all cut files at once. Complete your edits/analysis on the currently loaded [C] subset first, call \`<mute_files>\` on finished files before loading the next subset, or use \`<show_symbol>\` / \`<peek_files>\` for targeted lookups.`;
+                        }
+                    }
+
+                    if (consecutiveCompressionLoopCount >= 2 || (isDuplicateRepetition && !anySuccess)) {
+                        forceFinalAnswerNoTools = true;
+                        if (typeof batchUserMsg.content === 'string') {
+                            batchUserMsg.content += `\n\n### 🛑 CONTEXT LOOP PROTECTION ENGAGED\nAuto Mode tool execution is paused for your next response to prevent an infinite context-activation loop.\nRespond directly NOW using your currently loaded files: deliver the \`<file>\` edits for this phase, summarize what remains for the next phase, or emit a \`<user_instruction>\` block telling the user what to run or verify.`;
+                        }
                     }
                 }
 
@@ -6106,11 +6890,32 @@ The user has CONFIRMED and VALIDATED your plan.
                     ...loopTransientTurns
                 ]);
 
-                await runTurn();
+                await runTurn(isInsideMultiPhaseExecution);
+            } else if (requiresEndTagCap && !turnEndTagged && !forceFinalAnswerNoTools) {
+                const canAutoExecCode = this._discussionCapabilities.allowCodeExecution === true && this._discussionCapabilities.autoExecuteCode === true;
+                const toolExamples = canAutoExecCode
+                    ? '(<execute_code>, <unmute_files>, <load_structure>, etc.)'
+                    : '(<unmute_files>, <load_structure>, <show_symbol>, etc.)';
+                loopMessages.push({ role: 'assistant', content: stripThinkingTags(turnResponse).trim() });
+                loopMessages.push({
+                    role: 'user',
+                    content: `${turnPatchReport ? `${turnPatchReport}\n` : ''}### ⏳ CONTINUATION REQUIRED — EXPLICIT END TAG MISSING
+"Require Explicit End Tag" is enabled and your response did not contain the completion marker.
+- If work remains, continue IMMEDIATELY: use tool tags ${toolExamples} or \`<file path="..." action="write|patch|update_symbol">\` mutation tags.
+- Do NOT wait for the user to say "continue".
+- When the task is fully complete, end your final response with the tag \`</end>\` (or \`</done>\`).
+
+Respond immediately.`
+                });
+                loopMessages = ensureStrictAlternatingRoles(loopMessages);
+                await runTurn(isInsideMultiPhaseExecution);
+                return;
             } else {
-                // Ghost completion circuit breaker
+                // Ghost completion & intent-without-action circuit breaker
                 const normalizedTurn = normalizePseudoFileBlocks(turnResponse);
                 const turnHasCode = normalizedTurn.includes('<file') || normalizedTurn.includes('<<<<<<< SEARCH');
+                const turnHasStructuredEnd = /<(?:plan|user_instruction|lollms_form|form|delete_files|delete_file)\b/i.test(scannableTurn) ||
+                    /summary of changes/i.test(scannableTurn);
 
                 const textLower = turnResponse.toLowerCase();
                 const claimsApplied = textLower.includes('successfully applied') ||
@@ -6128,16 +6933,30 @@ The user has CONFIRMED and VALIDATED your plan.
                     textLower.includes('completed stage 3') ||
                     textLower.includes('completed phase 3');
 
-                const isGhostCompletion = (isPlanConfirmation || claimsApplied) && !turnHasCode && ghostRetriesCount < 1;
+                const statesIntentWithoutAction = !turnHasCode &&
+                    !turnHasStructuredEnd &&
+                    /\b(?:i will now|i'll now|let me|let's|i am going to|i'm going to|next,?\s+i(?:'ll| will)|now i(?:'ll| will)|first,?\s+i(?:'ll| will)|i need to (?:check|inspect|read|look|examine|update|modify))\b/i.test(scannableTurn);
+
+                const isGhostCompletion = (isPlanConfirmation || claimsApplied || statesIntentWithoutAction) && !turnHasCode && ghostRetriesCount < 2;
 
                 if (isGhostCompletion) {
                     ghostRetriesCount++;
-                    this.log("Ghost completion detected: model summarized changes without emitting <file> code tags. Triggering mandatory code emission...", "WARN");
+                    this.log(`Incomplete/stalling turn detected (${statesIntentWithoutAction ? 'intent-without-action' : 'ghost-completion'}). Enforcing structured completion...`, "WARN");
 
                     loopMessages.push({ role: 'assistant', content: stripThinkingTags(turnResponse).trim() });
                     loopMessages.push({
                         role: 'user',
-                        content: `### 🛑 CRITICAL PROTOCOL BREACH: ZERO FILE TAGS EMITTED
+                        content: statesIntentWithoutAction
+                            ? `### 🛑 PROTOCOL ENFORCEMENT: INCOMPLETE TURN (INTENT WITHOUT ACTION)
+You stated what you intend to do next, but you did NOT emit any tool tags or \`<file>\` mutation tags!
+Do NOT stop and wait for "continue".
+
+**MANDATORY IMMEDIATE ACTION:**
+Execute your intent right now using the proper structured tags:
+- To inspect/load context: emit \`<load_structure>\`, \`<show_symbol>\`, \`<manage_symbols>\`, \`<unmute_files>\`, \`<add_files_to_context>\`, \`<grep>\`, or \`<sparql>\`.
+- To apply code changes: emit \`<file path="..." action="write|patch|update_symbol">\` tags followed by \`### 📋 Summary of Changes\`.
+Proceed immediately with the complete structured response.`
+                            : `### 🛑 CRITICAL PROTOCOL BREACH: ZERO FILE TAGS EMITTED
 You stated that changes were applied/implemented, but you did NOT output any \`<file path="..." action="...">\` tags!
 Describing code changes in prose does NOT modify files on disk. The files are completely unchanged.
 
@@ -6147,7 +6966,7 @@ Do NOT repeat the verbal summary. Output the code tags now.`
                     });
                     loopMessages = ensureStrictAlternatingRoles(loopMessages);
 
-                    await runTurn();
+                    await runTurn(isInsideMultiPhaseExecution);
                     return;
                 }
                 
@@ -6210,7 +7029,7 @@ Do NOT repeat the verbal summary. Output the code tags now.`
         const hasCodeBlocks = normalizedBuffer.includes('<file') || normalizedBuffer.includes('<<<<<<< SEARCH');
 
         // End-of-Generation Context Verification Check
-        if (hasCodeBlocks && !controller?.signal.aborted) {
+        if (!formDetectedInTurn && hasCodeBlocks && !controller?.signal.aborted) {
             const verification = await this.verifyGeneratedPatchContext(normalizedBuffer);
             if (!verification.valid) {
                 const unpossessedList = verification.unpossessedFiles.join(', ');
@@ -6219,13 +7038,15 @@ Do NOT repeat the verbal summary. Output the code tags now.`
                 return;
             }
 
-            if (this._discussionCapabilities.autoApply && processId && !isFastMode) {
+            const hasDeleteFilesInBuffer = this._discussionCapabilities.fileDelete !== false &&
+                /(?:^[ \t]*|(?<=>)[ \t]*)<(?:delete_files|delete_file)\b/im.test(normalizedBuffer);
+            if (this._discussionCapabilities.autoApply && processId && !patchesAppliedInLoop && !hasDeleteFilesInBuffer) {
                 await this.executeAutomationPipeline(normalizedBuffer, assistantMessageId, controller.signal, processId);
             }
         }
 
         // ── CONCATENATE ALL STEPS INTO A SINGLE UNIFIED MESSAGE ──
-        if (this._activeMultiPartPlan && Array.isArray(this._activeMultiPartPlan.parts) && !controller?.signal.aborted) {
+        if (!formDetectedInTurn && this._activeMultiPartPlan && Array.isArray(this._activeMultiPartPlan.parts) && !controller?.signal.aborted) {
             const totalParts = this._activeMultiPartPlan.totalParts || this._activeMultiPartPlan.parts.length;
             while (this._activeMultiPartPlan.currentPartIndex + 1 < totalParts && !controller?.signal.aborted) {
                 const currentIdx = this._activeMultiPartPlan.currentPartIndex;
@@ -6337,7 +7158,7 @@ ${phaseSigs}${phaseTargets}> 🎯 **Instructions for Implementation**:
                 const targetFilesJoined = (nextPhase.editFiles || []).map((f: string) => '`' + f + '`').join(', ');
                 const stepUserPrompt: ChatMessage = {
                     role: 'user',
-                    content: `### 🐾 Phase ${nextPartIdx + 1} of ${totalParts} Implementation\nFollow the Lead Librarian's instructions for this phase:\n${phaseFindings}\n\nTarget files: ${targetFilesJoined}\nOutput the code modifications inside <file path="..." action="write|patch|update_symbol"> tags.`
+                    content: `### 🐾 Phase ${nextPartIdx + 1} of ${totalParts} Implementation\nFollow the Lead Librarian's instructions for this phase:\n${phaseFindings}\n\nTarget files: ${targetFilesJoined}\nOutput the code modifications inside \`<file path="..." action="write|patch|update_symbol">\` tags.`
                 };
 
                 const phaseMessages = buildLoopMessages(currentContextPayload, false);
@@ -6412,7 +7233,7 @@ ${phaseSigs}${phaseTargets}> 🎯 **Instructions for Implementation**:
                 const fileOpenCount = (closedResponse.match(/<file\b[^>]*>/gi) || []).length;
                 const fileCloseCount = (closedResponse.match(/<\/file>/gi) || []).length;
                 if (fileOpenCount > fileCloseCount) {
-                    closedResponse += '\n';
+                    closedResponse += '\n<' + '/file>';
                 }
 
                 // Check for unclosed markdown code fences
@@ -7782,11 +8603,14 @@ ${res.output || '(No output recorded)'}
 
         let firstTokenReceived = false;
         let lastMetricsPostTime = 0;
+        const thinkTimings: Array<{ start: number; end?: number }> = [];
+        let firstTokenTimestamp: number | undefined;
         try {
             await this._lollmsAPI.sendChat(messagesToSend, (chunk) => {
                 if (controller.signal.aborted) return;
                 if (!firstTokenReceived) {
                     firstTokenReceived = true;
+                    firstTokenTimestamp = Date.now();
                     if (processId) this.processManager.updateDescription(processId, `Streaming response from ${targetModel}...`);
                     this.updateGeneratingState();
                 }
@@ -7794,6 +8618,7 @@ ${res.output || '(No output recorded)'}
                 fullResponse += chunk;
                 generationSession.buffer += chunk;
                 generationSession.tokenCount++;
+                this.updateThinkTimingsFromBuffer(fullResponse, thinkTimings, firstTokenTimestamp);
 
                 const now = Date.now();
                 if (now - lastMetricsPostTime >= 250) {
@@ -7880,6 +8705,7 @@ ${res.output || '(No output recorded)'}
 
             const elapsed = (Date.now() - generationSession.startTime) / 1000;
             const finalTps = (generationSession.tokenCount / elapsed).toFixed(1);
+            const finalThinkDurations = this.finalizeThinkTimings(thinkTimings);
 
             const assistantMessage: ChatMessage = { 
                 id: assistantMessageId, 
@@ -7887,7 +8713,8 @@ ${res.output || '(No output recorded)'}
                 content: processedResponse, 
                 model: generationSession.model,
                 personalityName: personaName,
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                ...(finalThinkDurations.length > 0 ? { thinkDurations: finalThinkDurations } : {})
             };
             await this.addMessageToDiscussion(assistantMessage, false);
 
@@ -7897,7 +8724,8 @@ ${res.output || '(No output recorded)'}
                     id: assistantMessageId, 
                     fullContent: processedResponse,
                     tps: finalTps,
-                    personalityName: personaName
+                    personalityName: personaName,
+                    ...(finalThinkDurations.length > 0 ? { thinkDurations: finalThinkDurations } : {})
                 });
                 this._panel.webview.postMessage({ command: 'collapseLibrarianMessages' });
             }
@@ -7988,10 +8816,7 @@ ${res.output || '(No output recorded)'}
     ChatPanel.isBatchApplying = false;
 
     // Clear any active context and token calculation timeouts immediately to prevent disposed webview crashes
-    if ((this as any)._tokenDebounceTimeout) {
-        clearTimeout((this as any)._tokenDebounceTimeout);
-        (this as any)._tokenDebounceTimeout = undefined;
-    }
+    this.clearTokenDebounce();
     if (this._tokenAbortController) {
         this._tokenAbortController.abort();
         this._tokenAbortController = null;
@@ -8000,6 +8825,11 @@ ${res.output || '(No output recorded)'}
     if (this._activeRepairController) {
         this._activeRepairController.abort();
         this._activeRepairController = null;
+    }
+
+    if (this._activeInterProjectController) {
+        this._activeInterProjectController.abort();
+        this._activeInterProjectController = null;
     }
 
     this._activeMultiPartPlan = undefined;
@@ -9696,6 +10526,15 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                 break;
             case 'bulkCopyFiles':
                 vscode.commands.executeCommand('lollms-vs-coder.bulkCopyFiles', message.operations);
+                break;
+            case 'generateInterProjectPrompt':
+                await this.handleGenerateInterProjectPrompt(message);
+                break;
+            case 'cancelInterProjectPrompt':
+                if (this._activeInterProjectController) {
+                    this._activeInterProjectController.abort();
+                    this._activeInterProjectController = null;
+                }
                 break;
             case 'cancelFileRepairPass':
                 if (this._activeRepairController) {
@@ -11456,64 +12295,98 @@ Task:
                 }
                 break;
             case 'importSkills':
+                await this.handleImportSkills();
+                break;
+            case 'inferPrompt':
+                await this.handleInferPrompt(message.messageId);
+                break;
             case 'requestFixFailedHunks':
                 {
-                    const failedHunks: any[] = Array.isArray(message.failedHunks) ? message.failedHunks : [];
-                    if (failedHunks.length === 0 || this._isDisposed) break;
+                    let resultPosted = false;
+                    const notifyWebviewResult = (dispatched: boolean, error?: string) => {
+                        if (resultPosted || this._isDisposed || !this._panel?.webview) return;
+                        resultPosted = true;
+                        this._panel.webview.postMessage({
+                            command: 'fixFailedHunksResult',
+                            messageId: message.messageId,
+                            dispatched,
+                            error
+                        });
+                    };
 
-                    const affectedFiles = new Set<string>();
-                    const itemizedReports: string[] = [];
-
-                    for (let idx = 0; idx < failedHunks.length; idx++) {
-                        const item = failedHunks[idx];
-                        const rawPath = String(item.filePath || '').trim();
-                        const cleanPath = rawPath.includes(':') && !/^[a-zA-Z]:[\\/]/.test(rawPath)
-                            ? rawPath.split(':')[0].trim()
-                            : rawPath;
-                        if (cleanPath) affectedFiles.add(cleanPath);
-
-                        let failingSnippet = String(item.content || '');
-                        if (item.hunkIndex !== undefined && failingSnippet.includes('<<<<<<< SEARCH')) {
-                            const hunks = parseAiderHunks(normalizeAiderContent(failingSnippet));
-                            if (hunks[item.hunkIndex]) {
-                                failingSnippet = hunks[item.hunkIndex].fullMatch;
-                            }
+                    try {
+                        const failedHunks: any[] = Array.isArray(message.failedHunks) ? message.failedHunks : [];
+                        if (failedHunks.length === 0 || this._isDisposed) {
+                            notifyWebviewResult(false, 'No failed hunks to fix.');
+                            break;
                         }
-                        if (failingSnippet.length > 3000) {
-                            failingSnippet = failingSnippet.substring(0, 3000) + '\n... [truncated]';
+                        if (!this._currentDiscussion || !this.processManager) {
+                            notifyWebviewResult(false, 'No active discussion available.');
+                            break;
+                        }
+                        if (this._isSendingMessage || this._inputResolver) {
+                            vscode.window.showWarningMessage('Cannot start fix while another message or prompt is active. Please wait or stop the current operation.');
+                            notifyWebviewResult(false, 'Another operation is currently active.');
+                            break;
                         }
 
-                        let diskContent = '';
-                        try {
-                            const res = await this._contextManager.resolveWorkspaceFromPath(cleanPath);
-                            if (res) {
-                                const doc = await vscode.workspace.openTextDocument(res.uri);
-                                diskContent = doc.getText();
+                        const affectedFiles = new Set<string>();
+                        const itemizedReports: string[] = [];
+
+                        for (let idx = 0; idx < failedHunks.length; idx++) {
+                            const item = failedHunks[idx];
+                            const rawPath = String(item.filePath || '').trim();
+                            const cleanPath = rawPath.includes(':') && !/^[a-zA-Z]:[\\/]/.test(rawPath)
+                                ? rawPath.split(':')[0].trim()
+                                : rawPath;
+                            if (cleanPath) affectedFiles.add(cleanPath);
+
+                            let failingSnippet = String(item.content || '');
+                            if (item.hunkIndex !== undefined && failingSnippet.includes('<<<<<<< SEARCH')) {
+                                const hunks = parseAiderHunks(normalizeAiderContent(failingSnippet));
+                                if (hunks[item.hunkIndex]) {
+                                    failingSnippet = hunks[item.hunkIndex].fullMatch;
+                                }
                             }
-                        } catch {}
-
-                        let crossNotice = '';
-                        try {
-                            const searchMatch = failingSnippet.match(/<<<<<<< SEARCH\s*\r?\n([\s\S]*?)\r?\n=======/);
-                            const searchPart = searchMatch ? searchMatch[1] : failingSnippet;
-                            const crossFile = await findHunkInWorkspace(searchPart, cleanPath, this._contextManager);
-                            if (crossFile) {
-                                crossNotice = `\n> ⚠️ **MISPLACED HUNK DETECTED**: This search block was not found in \`${cleanPath}\`, but matched \`${crossFile.filePath}\` around line ${crossFile.line}.`;
-                                affectedFiles.add(crossFile.filePath);
+                            if (failingSnippet.length > 3000) {
+                                failingSnippet = failingSnippet.substring(0, 3000) + '\n... [truncated]';
                             }
-                        } catch {}
 
-                        const hunkTitle = item.hunkIndex !== undefined
-                            ? `\`${cleanPath}\` (Hunk ${item.hunkIndex + 1})`
-                            : `\`${cleanPath}\``;
+                            let diskContent = '';
+                            try {
+                                const res = await this._contextManager.resolveWorkspaceFromPath(cleanPath);
+                                if (res) {
+                                    const doc = await vscode.workspace.openTextDocument(res.uri);
+                                    diskContent = doc.getText();
+                                }
+                            } catch {}
 
-                        const diskExcerpt = diskContent
-                            ? (diskContent.length > 6000
-                                ? diskContent.substring(0, 6000) + `\n... [truncated at 6000 chars; full file is in LOADED FILE CONTENTS]`
-                                : diskContent)
-                            : '(File could not be read from disk)';
+                            let crossNotice = '';
+                            const crossSearchCtrl = new AbortController();
+                            const crossSearchTimer = setTimeout(() => crossSearchCtrl.abort(), 3000);
+                            try {
+                                const searchMatch = failingSnippet.match(/<<<<<<< SEARCH\s*\r?\n([\s\S]*?)\r?\n=======/);
+                                const searchPart = searchMatch ? searchMatch[1] : failingSnippet;
+                                const crossFile = await findHunkInWorkspace(searchPart, cleanPath, this._contextManager, crossSearchCtrl.signal);
+                                if (crossFile) {
+                                    crossNotice = `\n> ⚠️ **MISPLACED HUNK DETECTED**: This search block was not found in \`${cleanPath}\`, but matched \`${crossFile.filePath}\` around line ${crossFile.line}.`;
+                                    affectedFiles.add(crossFile.filePath);
+                                }
+                            } catch {} finally {
+                                clearTimeout(crossSearchTimer);
+                            }
 
-                        itemizedReports.push(`#### Failed Hunk ${idx + 1}: ${hunkTitle}
+                            const hunkTitle = item.hunkIndex !== undefined
+                                ? `\`${cleanPath}\` (Hunk ${item.hunkIndex + 1})`
+                                : `\`${cleanPath}\``;
+
+                            const diskExcerpt = diskContent
+                                ? (diskContent.length > 6000
+                                    ? diskContent.substring(0, 6000) + `\n... [truncated at 6000 chars; full file is in LOADED FILE CONTENTS]`
+                                    : diskContent)
+                                : '(File could not be read from disk)';
+
+                            itemizedReports.push(`#### Failed Hunk ${idx + 1}: ${hunkTitle}
 **Error:** ${item.error || 'Search block mismatch'}${crossNotice}
 
 **Failing Patch:**
@@ -11525,18 +12398,18 @@ ${failingSnippet}
 \`\`\`
 ${diskExcerpt}
 \`\`\``);
-                    }
+                        }
 
-                    const fileList = Array.from(affectedFiles);
-                    if (fileList.length > 0) {
-                        await this.unmuteFiles(fileList);
-                        await this._contextManager.getContextStateProvider()?.addFilesToContext(fileList);
-                        await this.addFilesToDiscussionContext(fileList, 'included');
-                        this.recordCurrentPromptFiles(fileList);
-                        await this.updateContextAndTokens({ isBackgroundSync: false });
-                    }
+                        const fileList = Array.from(affectedFiles);
+                        if (fileList.length > 0) {
+                            await this.unmuteFiles(fileList);
+                            await this._contextManager.getContextStateProvider()?.addFilesToContext(fileList);
+                            await this.addFilesToDiscussionContext(fileList, 'included');
+                            this.recordCurrentPromptFiles(fileList);
+                            this.updateContextAndTokens({ isBackgroundSync: true });
+                        }
 
-                    const fixUserPrompt = `### 🛠️ FIX FAILED HUNKS (${failedHunks.length} failed hunk${failedHunks.length > 1 ? 's' : ''})
+                        const fixUserPrompt = `### 🛠️ FIX FAILED HUNKS (${failedHunks.length} failed hunk${failedHunks.length > 1 ? 's' : ''})
 I ran **Apply All**, and the following hunk(s) failed to apply to disk. Please fix these hunks based on the actual current file contents on disk:
 
 ${itemizedReports.join('\n\n---\n\n')}
@@ -11546,11 +12419,19 @@ ${itemizedReports.join('\n\n---\n\n')}
 2. Ensure every \`<<<<<<< SEARCH\` block matches the exact lines, indentation, and whitespace currently on disk (or use \`action="update_symbol"\` / \`action="write"\` if needed).
 3. Output ONLY the corrected \`<file path="..." action="patch|update_symbol|write">\` blocks for the failed hunks.`;
 
-                    await this.sendMessage({
-                        id: 'user_fix_hunks_' + Date.now(),
-                        role: 'user',
-                        content: fixUserPrompt
-                    });
+                        notifyWebviewResult(true);
+                        await this.sendMessage({
+                            id: 'user_fix_hunks_' + Date.now(),
+                            role: 'user',
+                            content: fixUserPrompt
+                        });
+                    } catch (fixErr: any) {
+                        this.log(`requestFixFailedHunks failed: ${fixErr?.message || fixErr}`, 'ERROR');
+                        vscode.window.showErrorMessage(`Failed to request hunk fix: ${fixErr?.message || fixErr}`);
+                        notifyWebviewResult(false, fixErr?.message || String(fixErr));
+                    } finally {
+                        notifyWebviewResult(false);
+                    }
                 }
                 break;
             case 'importSelectedSkills': {
@@ -11679,6 +12560,9 @@ ${itemizedReports.join('\n\n---\n\n')}
                 break;
             case 'updateDiscussionCapabilities':
                 this._discussionCapabilities = message.capabilities;
+                if (this._discussionCapabilities.allowCodeExecution !== true) {
+                    this._discussionCapabilities.autoExecuteCode = false;
+                }
                 // Full settings update from modal: we treat this as a potential default update
                 await this.saveCapabilities(true);
 
@@ -11777,7 +12661,27 @@ ${itemizedReports.join('\n\n---\n\n')}
                         await vscode.workspace.getConfiguration('lollmsVsCoder').update('preciseTokenization', partial.preciseTokenization, vscode.ConfigurationTarget.Global);
                     }
 
+                    if (partial.allowCodeExecution === false) {
+                        partial.autoExecuteCode = false;
+                    }
+                    const effectiveAllowCode = partial.allowCodeExecution !== undefined
+                        ? partial.allowCodeExecution === true
+                        : this._discussionCapabilities.allowCodeExecution === true;
+                    if (!effectiveAllowCode) {
+                        partial.autoExecuteCode = false;
+                    }
+
+                    if (partial.autoExecuteTools !== undefined && partial.autoApply === undefined) {
+                        partial.autoApply = partial.autoExecuteTools;
+                    } else if ((partial as any).autoMode !== undefined) {
+                        partial.autoExecuteTools = !!(partial as any).autoMode;
+                        partial.autoApply = !!(partial as any).autoMode;
+                    }
+
                     this._discussionCapabilities = { ...this._discussionCapabilities, ...partial };
+                    if (this._discussionCapabilities.allowCodeExecution !== true) {
+                        this._discussionCapabilities.autoExecuteCode = false;
+                    }
 
                     if (partial.agentMode !== undefined) {
                         if (partial.agentMode && !this.agentManager.getIsActive()) {
@@ -11818,7 +12722,7 @@ ${itemizedReports.join('\n\n---\n\n')}
 
                     // OPTIMIZATION: If only mode flags (Think, Agent, AutoTools, FastMode/Librarian) changed,
                     // do not trigger a full context scan to avoid badge-flicker or blocking state sync.
-                    const isVisualOnly = partial.thinkingMode !== undefined || partial.agentMode !== undefined || partial.autoExecuteTools !== undefined || partial.fastMode !== undefined;
+                    const isVisualOnly = partial.thinkingMode !== undefined || partial.agentMode !== undefined || partial.autoExecuteTools !== undefined || partial.fastMode !== undefined || partial.allowCodeExecution !== undefined || partial.autoExecuteCode !== undefined || partial.autoExecuteScouting !== undefined || partial.requireExplicitEndTag !== undefined;
 
                     if (!isVisualOnly) {
                         await this.updateContextAndTokens({ isBackgroundSync: false });
@@ -12547,7 +13451,15 @@ ${itemizedReports.join('\n\n---\n\n')}
    */
   public sanitizeMessageContentForPrompt(content: any): any {
       if (typeof content === 'string') {
-          return stripThinkingTags(content)
+          let text = content;
+          if (text.startsWith('FORM_SUBMISSION:')) {
+              try {
+                  const parsedForm = JSON.parse(text.substring(16).trim());
+                  const entries = Object.entries(parsedForm).map(([k, v]) => `- **${k}**: ${v}`).join('\n');
+                  text = `User Form Submission:\n${entries}`;
+              } catch {}
+          }
+          return stripThinkingTags(text)
               .replace(/<div class=["']waiting-animation["']>[\s\S]*?<\/div>/gi, '')
               .replace(/<details\s+class=["']processing-block["']>[\s\S]*?<\/details>/gi, '')
               .replace(/<details\s+class=["']lollms-form-block["']>[\s\S]*?<\/details>/gi, '')
@@ -12776,13 +13688,13 @@ ${itemizedReports.join('\n\n---\n\n')}
         currentAssistantMessageId?: string,
         processId?: string,
         extraOverheadTokens: number = 0
-    ): Promise<{ contextData: ContextResult, history: ChatMessage[], cutFiles: string[], shrunkFiles: string[], mutedFiles: string[] }> {
+    ): Promise<{ contextData: ContextResult, history: ChatMessage[], cutFiles: string[], shrunkFiles: string[], mutedFiles: string[], exploded: boolean, initialTotalTokens: number, triggerBudget: number, maxTokens: number }> {
         if (!this._currentDiscussion || !this._contextManager) {
-            return { contextData: currentContext, history: historyMessages || [], cutFiles: [], shrunkFiles: [], mutedFiles: [] };
+            return { contextData: currentContext, history: historyMessages || [], cutFiles: [], shrunkFiles: [], mutedFiles: [], exploded: false, initialTotalTokens: 0, triggerBudget: 128000, maxTokens: 128000 };
         }
 
         if (this._discussionCapabilities.ignoreContextSize === true) {
-            return { contextData: currentContext, history: historyMessages || [], cutFiles: [], shrunkFiles: [], mutedFiles: [] };
+            return { contextData: currentContext, history: historyMessages || [], cutFiles: [], shrunkFiles: [], mutedFiles: [], exploded: false, initialTotalTokens: 0, triggerBudget: Number.MAX_SAFE_INTEGER, maxTokens: Number.MAX_SAFE_INTEGER };
         }
 
           const maxTokens =
@@ -12791,10 +13703,28 @@ ${itemizedReports.join('\n\n---\n\n')}
               getContextLimitForModel(targetModel) ||
               128000;
 
-          const triggerThresholdPct = Math.min(98, this._discussionCapabilities.contextGovernorThreshold ?? 95);
-          const targetThresholdPct = Math.min(triggerThresholdPct, this._discussionCapabilities.contextGovernorTargetThreshold ?? 70);
+          const pruningStrategy: 'aggressive' | 'balanced' | 'permissive' =
+              (this._discussionCapabilities as any).contextPruningStrategy || 'balanced';
+          const rawHistoryMaxPct = Number((this._discussionCapabilities as any).historyMaxPercent);
+          const historyMaxPercent = Number.isFinite(rawHistoryMaxPct)
+              ? Math.max(5, Math.min(90, rawHistoryMaxPct))
+              : 30;
+          const historyBudgetTokens = Math.round(maxTokens * (historyMaxPercent / 100));
+
+          const baseTriggerPct = Math.min(98, this._discussionCapabilities.contextGovernorThreshold ?? 95);
+          const baseTargetPct = Math.min(baseTriggerPct, this._discussionCapabilities.contextGovernorTargetThreshold ?? 70);
+
+          const triggerThresholdPct = pruningStrategy === 'aggressive'
+              ? Math.min(baseTriggerPct, 80)
+              : (pruningStrategy === 'permissive' ? Math.max(baseTriggerPct, 96) : baseTriggerPct);
+
           const triggerBudget = Math.round(maxTokens * (triggerThresholdPct / 100));
-          const targetBudget = Math.round(maxTokens * (targetThresholdPct / 100));
+          const rawTargetBudget = Math.round(maxTokens * (baseTargetPct / 100));
+          const targetBudget = pruningStrategy === 'aggressive'
+              ? Math.min(triggerBudget, Math.round(maxTokens * Math.min(baseTargetPct, 55) / 100))
+              : (pruningStrategy === 'permissive'
+                  ? Math.min(triggerBudget, Math.max(rawTargetBudget, Math.round(maxTokens * 0.88)))
+                  : Math.min(triggerBudget, Math.max(rawTargetBudget, Math.round(maxTokens * 0.82))));
 
           let activeHistory = (historyMessages || (this._currentDiscussion.llmHistory || this._currentDiscussion.messages || []).filter(m => !m.skipInPrompt)).map(m => ({
               ...m,
@@ -12825,15 +13755,18 @@ ${itemizedReports.join('\n\n---\n\n')}
           const fixedOverheadTokens = 3000 + skillsTokens + promptTokens + (imageCount * imgCost) + extraOverheadTokens;
 
           const initialTotalTokens = fixedOverheadTokens + historyTokens + filesTokens + treeTokens;
+          const historyOverCap = historyTokens > historyBudgetTokens && activeHistory.length > 0;
 
-          // If under threshold, continue immediately without asking questions
-          if (initialTotalTokens <= triggerBudget) {
-              return { contextData: currentContext, history: activeHistory, cutFiles: [], shrunkFiles: [], mutedFiles: [] };
+          // If both total context and history cap are under their thresholds, continue immediately
+          if (initialTotalTokens <= triggerBudget && !historyOverCap) {
+              return { contextData: currentContext, history: activeHistory, cutFiles: [], shrunkFiles: [], mutedFiles: [], exploded: false, initialTotalTokens, triggerBudget, maxTokens };
           }
 
-          this.log(`[Context Compression] Outbound load (~${initialTotalTokens.toLocaleString()} tok) exceeds trigger budget (~${triggerBudget.toLocaleString()} tok / ${maxTokens.toLocaleString()} limit). Starting adaptive protection loop...`, 'INFO');
+          this.log(`[Context Compression:${pruningStrategy}] Outbound load (~${initialTotalTokens.toLocaleString()} tok, history ~${historyTokens.toLocaleString()} / ${historyBudgetTokens.toLocaleString()} [${historyMaxPercent}%]) exceeds budget (~${triggerBudget.toLocaleString()} tok / ${maxTokens.toLocaleString()} limit). Starting pruning...`, 'INFO');
           if (processId) {
-              this.processManager.updateDescription(processId, '🗜️ Context bloated: Optimizing context before launching coder...');
+              this.processManager.updateDescription(processId, historyOverCap
+                  ? `🗜️ Compressing history (> ${historyMaxPercent}% limit) & optimizing context...`
+                  : `🗜️ Context bloated (${pruningStrategy}): Optimizing context...`);
               this.updateGeneratingState();
           }
 
@@ -12843,11 +13776,11 @@ ${itemizedReports.join('\n\n---\n\n')}
           let treeReduced = false;
           let treeSavedTokens = 0;
           let omittedFolders: string[] = [];
-          const convertedToSymbols: { path: string; symbols: string[] }[] = [];
+          const convertedToSymbols: { path: string; symbols: string[]; savedTokens: number }[] = [];
           let symbolsSavedTokens = 0;
-          const convertedToStructure: string[] = [];
+          const convertedToStructure: { path: string; savedTokens: number }[] = [];
           let structureSavedTokens = 0;
-          const mutedFilePaths: string[] = [];
+          const mutedFilePaths: { path: string; tokens: number }[] = [];
           let mutedSavedTokens = 0;
 
           const recalculateTotal = () => fixedOverheadTokens + historyTokens + filesTokens + treeTokens;
@@ -12866,7 +13799,8 @@ ${itemizedReports.join('\n\n---\n\n')}
 
           const runTreeReduction = () => {
               if (treeReduced) return false;
-              const treeTargetTokens = Math.max(1000, Math.min(3500, Math.round(targetBudget * 0.12)));
+              const treePct = pruningStrategy === 'aggressive' ? 0.08 : (pruningStrategy === 'permissive' ? 0.15 : 0.12);
+              const treeTargetTokens = Math.max(1000, Math.min(3500, Math.round(targetBudget * treePct)));
               const res = this._contextManager.reduceBloatedProjectTree(activeTreeText, treeTargetTokens);
               treeReduced = true;
               if (res.finalTokens < treeTokens && res.omittedFolders.length > 0) {
@@ -13026,11 +13960,13 @@ ${itemizedReports.join('\n\n---\n\n')}
                             .sort((a, b) => b.symScore - a.symScore || a.sym.tokens - b.sym.tokens);
 
                           if (scoredSyms.length > 0) {
-                              const maxSymBudget = Math.max(150, Math.floor(cand.tokens * 0.45));
+                              const symRatio = pruningStrategy === 'aggressive' ? 0.25 : (pruningStrategy === 'permissive' ? 0.65 : 0.45);
+                              const maxSyms = pruningStrategy === 'aggressive' ? 1 : (pruningStrategy === 'permissive' ? 6 : 3);
+                              const maxSymBudget = Math.max(150, Math.floor(cand.tokens * symRatio));
                               const chosenSymbols: string[] = [];
                               let symTokSum = 0;
                               for (const item of scoredSyms) {
-                                  if (chosenSymbols.length >= 3) break;
+                                  if (chosenSymbols.length >= maxSyms) break;
                                   if (symTokSum + item.sym.tokens <= maxSymBudget || chosenSymbols.length === 0) {
                                       chosenSymbols.push(item.sym.name);
                                       symTokSum += item.sym.tokens;
@@ -13051,7 +13987,7 @@ ${itemizedReports.join('\n\n---\n\n')}
                                       filesTokens = Math.max(0, filesTokens - saved);
                                       totalEstimated = recalculateTotal();
                                       symbolsSavedTokens += saved;
-                                      convertedToSymbols.push({ path: cand.path, symbols: chosenSymbols });
+                                      convertedToSymbols.push({ path: cand.path, symbols: chosenSymbols, savedTokens: saved });
                                       return true;
                                   }
                               }
@@ -13078,8 +14014,8 @@ ${itemizedReports.join('\n\n---\n\n')}
                       filesTokens = Math.max(0, filesTokens - saved);
                       totalEstimated = recalculateTotal();
                       structureSavedTokens += saved;
-                      if (!convertedToStructure.includes(cand.path)) {
-                          convertedToStructure.push(cand.path);
+                      if (!convertedToStructure.some(s => s.path === cand.path)) {
+                          convertedToStructure.push({ path: cand.path, savedTokens: saved });
                       }
                       return true;
                   }
@@ -13094,9 +14030,14 @@ ${itemizedReports.join('\n\n---\n\n')}
               filesTokens = Math.max(0, filesTokens - cand.tokens);
               totalEstimated = recalculateTotal();
               mutedSavedTokens += cand.tokens;
-              mutedFilePaths.push(cand.path);
+              mutedFilePaths.push({ path: cand.path, tokens: cand.tokens });
               return true;
           };
+
+          // Proactive History Cap: Never let conversation history exceed historyMaxPercent (default 30%) without compressing
+          if (historyTokens > historyBudgetTokens && activeHistory.length > 0) {
+              await runHistoryCompression();
+          }
 
           // Iterative verification loop: judge best bottleneck, shrink/compress, re-verify until under budget
           const MAX_PROTECTION_PASSES = 8;
@@ -13104,10 +14045,12 @@ ${itemizedReports.join('\n\n---\n\n')}
               if (signal.aborted) break;
               let madeProgress = false;
 
-              const isHistoryBottleneck = historyCompressedCount === 0 && historyTokens > 1500 &&
-                  (historyTokens >= filesTokens * 0.6 || historyTokens > Math.round(targetBudget * 0.35));
-              const isTreeBloated = !treeReduced && treeTokens > Math.max(3000, Math.round(maxTokens * 0.15)) &&
-                  treeTokens >= filesTokens * 0.35;
+              const isHistoryBottleneck = historyCompressedCount === 0 && historyTokens > 1000 &&
+                  (pruningStrategy === 'permissive' || historyTokens > historyBudgetTokens || historyTokens >= filesTokens * 0.6 || historyTokens > Math.round(targetBudget * 0.35));
+              const isTreeBloated = !treeReduced && (
+                  (pruningStrategy === 'permissive' && treeTokens > 1500) ||
+                  (treeTokens > Math.max(3000, Math.round(maxTokens * 0.15)) && treeTokens >= filesTokens * 0.35)
+              );
 
               if (isHistoryBottleneck) {
                   madeProgress = await runHistoryCompression();
@@ -13119,7 +14062,7 @@ ${itemizedReports.join('\n\n---\n\n')}
                   if (madeProgress) continue;
               }
 
-              // Tier A: Fast file shrinking (symbol-scoped first, then structure-only) on non-protected files
+              // Tier A: Shrink cold non-protected files (symbol-scoped first, then structure-only)
               const shrinkPassA = candidateBlocks
                   .filter(c => !c.muted && c.mode !== 'structure' && !c.isRecentlyAdded && !c.isProtected)
                   .sort((a, b) => a.score - b.score || b.tokens - a.tokens);
@@ -13132,7 +14075,7 @@ ${itemizedReports.join('\n\n---\n\n')}
               }
               if (totalEstimated <= targetBudget) break;
 
-              // Tier B: If still over target, try heavy compress history & tree if not done yet
+              // Tier B: Compress remaining history & tree if not done yet
               if (historyCompressedCount === 0 && historyTokens > 1000 && activeHistory.length > 0) {
                   if (await runHistoryCompression()) {
                       madeProgress = true;
@@ -13146,15 +14089,18 @@ ${itemizedReports.join('\n\n---\n\n')}
                   }
               }
 
-              // Tier C: Shrink previously added files (not just-added or explicitly protected) to symbols/structure down to targetBudget
-              const shrinkPassPrev = candidateBlocks
-                  .filter(c => !c.muted && c.mode !== 'structure' && c.isRecentlyAdded && !c.isProtected)
-                  .sort((a, b) => a.score - b.score || b.tokens - a.tokens);
+              // Tier C: Shrink previously added files (skipped in permissive mode unless over hard triggerBudget)
+              const fileGoal = pruningStrategy === 'permissive' ? triggerBudget : targetBudget;
+              if (totalEstimated > fileGoal) {
+                  const shrinkPassPrev = candidateBlocks
+                      .filter(c => !c.muted && c.mode !== 'structure' && c.isRecentlyAdded && !c.isProtected)
+                      .sort((a, b) => a.score - b.score || b.tokens - a.tokens);
 
-              for (const cand of shrinkPassPrev) {
-                  if (totalEstimated <= targetBudget) break;
-                  if (await shrinkFileViaSymbolsOrStructure(cand, true)) {
-                      madeProgress = true;
+                  for (const cand of shrinkPassPrev) {
+                      if (totalEstimated <= fileGoal) break;
+                      if (await shrinkFileViaSymbolsOrStructure(cand, true)) {
+                          madeProgress = true;
+                      }
                   }
               }
               if (totalEstimated <= targetBudget) break;
@@ -13172,15 +14118,17 @@ ${itemizedReports.join('\n\n---\n\n')}
               }
               if (totalEstimated <= targetBudget) break;
 
-              // Tier D1: Mute previously added files (preserving just-added and explicitly protected files)
-              const mutePassPrev = candidateBlocks
-                  .filter(c => !c.muted && c.isRecentlyAdded && !c.isProtected)
-                  .sort((a, b) => a.score - b.score || b.tokens - a.tokens);
+              // Tier D1: Mute previously added files (skipped in permissive mode unless over hard triggerBudget)
+              if (totalEstimated > fileGoal) {
+                  const mutePassPrev = candidateBlocks
+                      .filter(c => !c.muted && c.isRecentlyAdded && !c.isProtected)
+                      .sort((a, b) => a.score - b.score || b.tokens - a.tokens);
 
-              for (const cand of mutePassPrev) {
-                  if (totalEstimated <= targetBudget) break;
-                  if (muteCandidate(cand)) {
-                      madeProgress = true;
+                  for (const cand of mutePassPrev) {
+                      if (totalEstimated <= fileGoal) break;
+                      if (muteCandidate(cand)) {
+                          madeProgress = true;
+                      }
                   }
               }
               if (totalEstimated <= targetBudget) break;
@@ -13217,14 +14165,15 @@ ${itemizedReports.join('\n\n---\n\n')}
           // Persist symbol-scoped, structure-only, and muted states cleanly
           const provider = this._contextManager.getContextStateProvider();
           for (const item of convertedToSymbols) {
-              if (mutedFilePaths.some(mp => arePathsEqual(mp, item.path))) continue;
+              if (mutedFilePaths.some(mp => arePathsEqual(mp.path, item.path))) continue;
               await this.applySymbolBatchUpdate(item.path, item.symbols, [], 'replace', { skipTokenUpdate: true });
           }
 
-          const finalStructureOnlyPaths = convertedToStructure.filter(p =>
-              !mutedFilePaths.some(mp => arePathsEqual(mp, p)) &&
-              !convertedToSymbols.some(s => arePathsEqual(s.path, p))
+          const finalStructureEntries = convertedToStructure.filter(entry =>
+              !mutedFilePaths.some(mp => arePathsEqual(mp.path, entry.path)) &&
+              !convertedToSymbols.some(s => arePathsEqual(s.path, entry.path))
           );
+          const finalStructureOnlyPaths = finalStructureEntries.map(e => e.path);
           if (finalStructureOnlyPaths.length > 0) {
               await this.addFilesToDiscussionContext(finalStructureOnlyPaths, 'definitions-only');
               if (provider) {
@@ -13245,7 +14194,7 @@ ${itemizedReports.join('\n\n---\n\n')}
           if (mutedFilePaths.length > 0) {
               if (!this._currentDiscussion.mutedFiles) this._currentDiscussion.mutedFiles = [];
               for (const mp of mutedFilePaths) {
-                  const cleanMp = mp.replace(/\\/g, '/').trim();
+                  const cleanMp = mp.path.replace(/\\/g, '/').trim();
                   if (!this._currentDiscussion.mutedFiles.some(existing => arePathsEqual(existing, cleanMp))) {
                       this._currentDiscussion.mutedFiles.push(cleanMp);
                   }
@@ -13267,14 +14216,16 @@ ${itemizedReports.join('\n\n---\n\n')}
               compressionSummaryLines.push(`- **Conversation History Compressed**: Summarized ${historyCompressedCount} earlier message(s) up to the previous LLM response (~${historySavedTokens.toLocaleString()} tokens saved).`);
           }
           if (convertedToSymbols.length > 0) {
-              const symList = convertedToSymbols.map(s => `\`${s.path}\` (${s.symbols.join(', ')})`).join(', ');
-              compressionSummaryLines.push(`- **Files Shrunk to Key Symbols [D+Symbols]** (~${symbolsSavedTokens.toLocaleString()} tokens saved): ${symList}. Use \`<show_symbol>\` or \`<unmute_files>\` if additional symbols are needed.`);
+              const symList = convertedToSymbols.map(s => `\`${s.path}\` (kept: ${s.symbols.join(', ')}; saved ~${s.savedTokens.toLocaleString()} tok)`).join(', ');
+              compressionSummaryLines.push(`- **Files Shrunk to Key Symbols [D+Symbols]** (~${symbolsSavedTokens.toLocaleString()} tokens saved): ${symList}. You can directly update any loaded symbol with \`action="update_symbol"\`.`);
           }
-          if (finalStructureOnlyPaths.length > 0) {
-              compressionSummaryLines.push(`- **Files Converted to Structure-Only [D]** (~${structureSavedTokens.toLocaleString()} tokens saved; recently added files protected): ${finalStructureOnlyPaths.map(f => `\`${f}\``).join(', ')}. Use \`<unmute_files>\` if you need full implementation code.`);
+          if (finalStructureEntries.length > 0) {
+              const structList = finalStructureEntries.map(e => `\`${e.path}\` (saved ~${e.savedTokens.toLocaleString()} tok)`).join(', ');
+              compressionSummaryLines.push(`- **Files Converted to Structure-Only [D]** (~${structureSavedTokens.toLocaleString()} tokens saved): ${structList}.`);
           }
           if (mutedFilePaths.length > 0) {
-              compressionSummaryLines.push(`- **Files Muted [M] (Last Resort)** (~${mutedSavedTokens.toLocaleString()} tokens saved; paths kept in tree): ${mutedFilePaths.map(f => `\`${f}\``).join(', ')}. Use \`<unmute_files>\` to restore any needed file.`);
+              const mutedList = mutedFilePaths.map(m => `\`${m.path}\` (~${m.tokens.toLocaleString()} tok)`).join(', ');
+              compressionSummaryLines.push(`- **Files Muted [M]** (~${mutedSavedTokens.toLocaleString()} tokens saved; paths kept in tree): ${mutedList}.`);
           }
           if (omittedFolders.length > 0) {
               const preview = omittedFolders.slice(0, 15).map(f => `\`${f}\``).join(', ');
@@ -13283,13 +14234,13 @@ ${itemizedReports.join('\n\n---\n\n')}
           }
 
           const shrunkFilesList = Array.from(new Set([...convertedToSymbols.map(s => s.path), ...finalStructureOnlyPaths]));
-          const mutedFilesList = Array.from(new Set(mutedFilePaths));
+          const mutedFilesList = Array.from(new Set(mutedFilePaths.map(m => m.path)));
           const allCutFilesList = Array.from(new Set([...shrunkFilesList, ...mutedFilesList]));
 
           let compressionReport: string | undefined = undefined;
           if (compressionSummaryLines.length > 0) {
               const phasedRuleLine = allCutFilesList.length > 0
-                  ? `\n- **Phased Execution Directive**: Work in phases on small subsets (1–3 files). Do NOT blindly re-unmute the cut/compacted files above unless you first \`<mute_files>\` finished files to free context budget.`
+                  ? `\n- **Optimize Your Context**: Current full context size is **~${totalEstimated.toLocaleString()} / ${maxTokens.toLocaleString()} tokens**. Please help keep context lean: mute/remove useless or finished files (\`<mute_files>\` / \`<remove_files_from_context>\`), or collapse large files into symbols (\`<manage_symbols path="..." activate="Sym1, Sym2" />\`) while keeping only the few symbols you need intact.`
                   : '';
               compressionReport = `Automated context compression ran before sending because context exceeded budget (${initialTotalTokens.toLocaleString()} → ${totalEstimated.toLocaleString()} est. tokens; model limit: ${maxTokens.toLocaleString()}):\n${compressionSummaryLines.join('\n')}${phasedRuleLine}`;
               this.log(`[Context Compression] ${compressionReport.replace(/\n/g, ' | ')}`, 'INFO');
@@ -13323,7 +14274,11 @@ ${itemizedReports.join('\n\n---\n\n')}
               history: activeHistory,
               cutFiles: allCutFilesList,
               shrunkFiles: shrunkFilesList,
-              mutedFiles: mutedFilesList
+              mutedFiles: mutedFilesList,
+              exploded: initialTotalTokens > triggerBudget,
+              initialTotalTokens,
+              triggerBudget,
+              maxTokens
           };
       }
 
@@ -13589,6 +14544,206 @@ ${itemizedReports.join('\n\n---\n\n')}
       await this.updateContextAndTokens({ isBackgroundSync: false });
   }
 
+  public async handleGenerateInterProjectPrompt(params: {
+      request?: string;
+      mode?: 'integration' | 'inspiration' | 'migration';
+      targetProject?: string;
+      model?: string;
+      options?: {
+          includeActiveFiles?: boolean;
+          includeArchitecture?: boolean;
+          includeBriefing?: boolean;
+          includeHistory?: boolean;
+      };
+  }): Promise<void> {
+      if (this._isDisposed || !this._panel?.webview) return;
+
+      const userRequest = String(params?.request || '').trim();
+      if (!userRequest) {
+          this._panel.webview.postMessage({
+              command: 'interProjectPromptResult',
+              success: false,
+              error: 'Prompt description cannot be empty.'
+          });
+          return;
+      }
+
+      if (this._activeInterProjectController) {
+          this._activeInterProjectController.abort();
+      }
+      this._activeInterProjectController = new AbortController();
+      const signal = this._activeInterProjectController.signal;
+
+      const proc = this.processManager.register(this.discussionId, 'Generating Inter-Project Prompt...');
+      const processId = proc.id;
+      proc.controller.signal.addEventListener('abort', () => {
+          if (this._activeInterProjectController) {
+              this._activeInterProjectController.abort();
+          }
+      });
+
+      const targetModel = params?.model || this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+      const mode = params?.mode || 'integration';
+      const targetProject = String(params?.targetProject || '').trim();
+      const opts = params?.options || {};
+      const includeActiveFiles = opts.includeActiveFiles !== false;
+      const includeArchitecture = opts.includeArchitecture !== false;
+      const includeBriefing = opts.includeBriefing !== false;
+      const includeHistory = opts.includeHistory === true;
+
+      let fullText = '';
+
+      try {
+          const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+          const sourceProjectName = workspaceFolder?.name || 'Source Project';
+          const sourceRootPath = workspaceFolder?.uri.fsPath || '';
+
+          const contextData = await this._contextManager.getContextContent({
+              importedSkillIds: this._currentDiscussion?.importedSkills || [],
+              includeTree: true,
+              discussionId: this.discussionId,
+              mutedFiles: this._currentDiscussion?.mutedFiles || [],
+              modelName: targetModel,
+              signal,
+              capabilities: this._discussionCapabilities
+          });
+
+          if (signal.aborted) {
+              this._panel.webview.postMessage({ command: 'interProjectPromptResult', success: false, cancelled: true, fullText });
+              return;
+          }
+
+          const sections: string[] = [];
+          sections.push(`- **Source Project**: \`${sourceProjectName}\`${sourceRootPath ? ` (\`${sourceRootPath}\`)` : ''}`);
+          if (targetProject) {
+              sections.push(`- **Target Project / Stack**: ${targetProject}`);
+          }
+
+          if (contextData.projectTree) {
+              sections.push(`### 🌳 SOURCE PROJECT STRUCTURE\n${contextData.projectTree}`);
+          }
+
+          if (includeActiveFiles && contextData.selectedFilesContent) {
+              sections.push(`### 📄 SOURCE PROJECT LOADED FILES\n${contextData.selectedFilesContent}`);
+          }
+
+          if (includeArchitecture) {
+              const graphSummary = this._codeGraphManager?.getGraphData?.()?.nodes?.length > 0
+                  ? this._codeGraphManager.generateTextSummary()
+                  : '';
+              const structureGuide = await this._contextManager.getStructureGuide();
+              if (graphSummary) {
+                  sections.push(`### 🗺️ CODE ARCHITECTURE GRAPH SUMMARY\n${graphSummary.substring(0, 12000)}`);
+              }
+              if (structureGuide) {
+                  sections.push(`### 🏛️ ARCHITECTURE & KNOWLEDGE GUIDE\n${structureGuide.substring(0, 8000)}`);
+              }
+          }
+
+          if (includeBriefing) {
+              const briefing = this._contextManager.renderBriefing(this._currentDiscussion);
+              if (briefing) {
+                  sections.push(`### 🎯 MISSION BRIEFING & PROJECT CONVENTIONS\n${briefing}`);
+              }
+          }
+
+          if (includeHistory && this._currentDiscussion?.messages?.length) {
+              const recentHistory = this._currentDiscussion.messages
+                  .filter(m => !m.skipInPrompt && m.role !== 'system')
+                  .slice(-8)
+                  .map(m => {
+                      const clean = this.sanitizeMessageContentForPrompt(m.content);
+                      const txt = typeof clean === 'string' ? clean : (Array.isArray(clean) ? clean.map((p: any) => p.text || '').join('\n') : '');
+                      return txt ? `**${m.role.toUpperCase()}**:\n${txt.substring(0, 2000)}` : '';
+                  })
+                  .filter(Boolean)
+                  .join('\n\n');
+              if (recentHistory) {
+                  sections.push(`### 🕒 RELEVANT RECENT DISCUSSION CONTEXT\n${recentHistory}`);
+              }
+          }
+
+          const modeDirective = mode === 'inspiration'
+              ? `The target agent works in a SEPARATE project that wants to **get inspired by and adapt patterns, architecture, or mechanisms** from \`${sourceProjectName}\`. Distill the exact design patterns, state flows, invariants, and concrete implementation blueprints from the source project so the target agent can build an idiomatic version in its own codebase.`
+              : mode === 'migration'
+                  ? `The target agent works in a SEPARATE project that needs to **synchronize contracts, schemas, or migrate capabilities** with \`${sourceProjectName}\`. Detail exact schema mappings, breaking invariants, and step-by-step alignment instructions.`
+                  : `The target agent works in a SEPARATE project that **uses or integrates with** \`${sourceProjectName}\`. Provide exact APIs, entry points, types, message/wire formats, configuration requirements, and step-by-step integration instructions.`;
+
+          const systemPrompt = `You are a Principal Cross-Project Software Architect.
+Your task is to write a **complete, self-contained Master Prompt & Technical Handoff Document** addressed directly to an AI coding agent working inside ANOTHER project/repository.
+
+### 🎯 PURPOSE
+${modeDirective}
+
+### 🛡️ STRICT GROUNDING & QUALITY RULES
+1. **THE TARGET AGENT CANNOT SEE THIS REPOSITORY**: You must include every relevant contract, interface, type signature, endpoint, message schema, protocol rule, and architectural invariant explicitly inside the generated document.
+2. **ZERO HALLUCINATION**: Only cite file paths, symbol names, endpoints, config keys, and behaviors explicitly observed in the provided \`${sourceProjectName}\` context.
+3. **DIRECTLY ACTIONABLE FOR AN AI AGENT**: Write in second-person imperative ("You are working in...", "Implement...", "Verify...") so the user can copy-paste your entire output straight into the other project's AI agent chat.
+4. **REQUIRED DOCUMENT STRUCTURE**:
+   - **# 🤖 Cross-Project Agent Handoff Prompt** (Role, Mission Objective, and Relationship to \`${sourceProjectName}\`)
+   - **## 1. Source Project Contracts & Reference Architecture** (Exact APIs, types, protocols, file references, and key code/schema excerpts from \`${sourceProjectName}\`)
+   - **## 2. Step-by-Step Implementation Guide** (Ordered, concrete implementation tasks for the target agent)
+   - **## 3. Edge Cases, Security & Invariants** (Error handling, validation rules, and pitfalls to avoid)
+   - **## 4. Verification Checklist** (Concrete checks/tests the target agent should run after implementing)
+5. Output ONLY the Markdown document itself with no outer conversational preamble.`;
+
+          const userMessage = `### 🧭 USER'S CROSS-PROJECT REQUEST
+"${userRequest}"
+${targetProject ? `\n**Target Project / Stack**: ${targetProject}` : ''}
+**Mode**: ${mode.toUpperCase()}
+
+---
+
+### 📦 SOURCE PROJECT GROUND TRUTH (${sourceProjectName})
+${sections.join('\n\n')}`;
+
+          let lastPostTime = 0;
+          const THROTTLE_MS = 80;
+
+          const response = await this._lollmsAPI.sendChat(
+              [
+                  { role: 'system', content: systemPrompt },
+                  { role: 'user', content: userMessage }
+              ],
+              (chunk) => {
+                  if (signal.aborted) return;
+                  fullText += chunk;
+                  const now = Date.now();
+                  if (now - lastPostTime >= THROTTLE_MS) {
+                      lastPostTime = now;
+                      this._panel.webview.postMessage({
+                          command: 'interProjectPromptChunk',
+                          chunk,
+                          fullText
+                      });
+                  }
+              },
+              signal,
+              targetModel,
+              { thinking: false }
+          );
+
+          const finalOutput = stripThinkingTags(fullText || response).trim();
+          this._panel.webview.postMessage({
+              command: 'interProjectPromptResult',
+              success: true,
+              fullText: finalOutput
+          });
+      } catch (err: any) {
+          const isAborted = signal.aborted || err?.name === 'AbortError' || err?.message === 'AbortError' || err?.message === 'Operation cancelled';
+          this._panel.webview.postMessage({
+              command: 'interProjectPromptResult',
+              success: false,
+              cancelled: isAborted,
+              error: isAborted ? undefined : (err?.message || String(err)),
+              fullText: stripThinkingTags(fullText).trim()
+          });
+      } finally {
+          this.processManager.unregister(processId);
+          this._activeInterProjectController = null;
+      }
+  }
+
   public async auditFileDiagnostics(filePath: string, messageId?: string, blockIndex?: number, blockId?: string, signal?: AbortSignal) {
       if (this._isDisposed || !this._panel || !this._panel.webview || signal?.aborted) return;
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -13760,7 +14915,7 @@ ${aSep}
 [corrected lines with imports/fixes]
 ${aReplace}
 \`\`\`
-Or use targeted symbol replacement: <file path="${filePath}" action="update_symbol" symbol="SymbolName">...</file>
+Or use targeted symbol replacement: \`<file path="${filePath}" action="update_symbol" symbol="SymbolName">...</file>\`
 7. Provide a brief 1-2 sentence explanation of what was fixed outside code blocks.`;
 
       const userMessageText = `### 🔍 COMPILER / LINTER ERRORS DETECTED IN \`${filePath}\` (Round ${round}):

@@ -46,6 +46,7 @@ export interface ChatMessage {
   model?: string;
   personalityName?: string; // Add this field
   skipInPrompt?: boolean;
+  thinkDurations?: number[];
 }
 
 export interface TokenizeResponse {
@@ -657,24 +658,41 @@ export class LollmsAPI {
     }
   }
 
+  private registerModelsInBindingMaps(
+      models: Array<{ id: string; name?: string; server?: string }>,
+      activeBindings: ServerBinding[]
+  ): void {
+      if (!models || models.length === 0 || activeBindings.length === 0) return;
+      for (const m of models) {
+          const rawId = m.id.includes('::') ? m.id.substring(m.id.indexOf('::') + 2).trim() : m.id;
+          const binding = (m.server ? activeBindings.find(b => b.name === m.server) : undefined) || activeBindings[0];
+          const routeInfo = { binding, targetModel: rawId, rawModel: rawId };
+          this._modelToBindingMap.set(m.id, routeInfo);
+          if (!this._rawModelToBindingMap.has(rawId)) {
+              this._rawModelToBindingMap.set(rawId, routeInfo);
+          }
+      }
+  }
+
   public async getModels(forceRefresh: boolean = false): Promise<Array<{ id: string; name?: string; server?: string }>> {
     Logger.info(`[getModels] Cumulative query called across all active server bindings. Force: ${forceRefresh}`);
 
     const activeBindings = this.getAllActiveBindings();
     const activeServerNames = new Set(activeBindings.map(b => b.name));
+    const previousModels = (this._cachedModels && this._cachedModels.length > 0)
+        ? this._cachedModels
+        : (this.globalState?.get<Array<{ id: string; name?: string; server?: string }>>('lollms_models_cache') || []);
 
     if (forceRefresh) {
         this._cachedModels = null;
         this._modelToBindingMap.clear();
         this._rawModelToBindingMap.clear();
-        if (this.globalState) {
-            this.globalState.update('lollms_models_cache', undefined);
-        }
     } else {
         // Validate in-memory cache against currently active servers
         if (this._cachedModels && this._cachedModels.length > 0) {
             const isValid = this._cachedModels.every(m => !m.server || activeServerNames.has(m.server));
             if (isValid && activeBindings.length > 0) {
+                this.registerModelsInBindingMaps(this._cachedModels, activeBindings);
                 return this._cachedModels;
             }
             this._cachedModels = null;
@@ -686,6 +704,7 @@ export class LollmsAPI {
                 const isValid = storedModels.every(m => !m.server || activeServerNames.has(m.server));
                 if (isValid && activeBindings.length > 0) {
                     this._cachedModels = storedModels;
+                    this.registerModelsInBindingMaps(storedModels, activeBindings);
                     return storedModels;
                 }
                 this.globalState.update('lollms_models_cache', undefined);
@@ -703,14 +722,16 @@ export class LollmsAPI {
         return [];
     }
 
+    let hadFetchError = false;
     const results = await Promise.allSettled(
         activeBindings.map(async (binding) => {
             try {
                 const models = await this.fetchModelsForBinding(binding);
-                return { binding, models };
+                return { binding, models, failed: false };
             } catch (err: any) {
+                hadFetchError = true;
                 Logger.warn(`[getModels] Failed to query binding '${binding.name}' (${binding.apiUrl}): ${err.message}`);
-                return { binding, models: [] };
+                return { binding, models: [], failed: true };
             }
         })
     );
@@ -739,6 +760,16 @@ export class LollmsAPI {
                     this._rawModelToBindingMap.set(m.id, routeInfo);
                 }
             }
+        }
+    }
+
+    if (aggregated.length === 0 && hadFetchError && previousModels.length > 0) {
+        const preserved = previousModels.filter(m => !m.server || activeServerNames.has(m.server));
+        if (preserved.length > 0) {
+            Logger.warn(`[getModels] Preserving ${preserved.length} cached model(s) after transient fetch failure.`);
+            this._cachedModels = preserved;
+            this.registerModelsInBindingMaps(preserved, activeBindings);
+            return preserved;
         }
     }
 

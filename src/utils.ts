@@ -249,6 +249,11 @@ export interface DiscussionCapabilities {
         partialFormat: 'aider' | 'diff';
     };
     autoApply: boolean;
+    allowCodeExecution?: boolean;
+    autoExecuteScouting?: boolean;
+    autoExecuteCode?: boolean;
+    requireExplicitEndTag?: boolean;
+    autoMaxRounds?: number;
     autoFix: boolean;
     autoBranch: boolean;
     maxFixRetries: number;
@@ -422,7 +427,7 @@ function calculateLineSimilarity(line1: string, line2: string): number {
  * Strict validator for file paths to prevent hallucinated code snippets,
  * syntax tokens, or brackets from being treated as filenames.
  */
-export function isValidFilePath(filePath: string): boolean {
+export function isValidFilePath(filePath: string, options?: { allowExtensionless?: boolean }): boolean {
     if (!filePath || typeof filePath !== 'string') return false;
     let clean = filePath.trim().replace(/^['"`]|['"`]$/g, '');
 
@@ -466,6 +471,11 @@ export function isValidFilePath(filePath: string): boolean {
         '.eslintrc', '.editorconfig', 'changelog.md', 'readme.md'
     ]);
     if (knownFiles.has(base.toLowerCase())) return true;
+
+    if (options?.allowExtensionless) {
+        if (/^(?:true|false)$/i.test(clean)) return false;
+        return true;
+    }
 
     // Must have a valid extension: .ext where ext is 1-10 alphanumeric characters
     const extMatch = base.match(/\.([a-zA-Z0-9_\-]+)$/);
@@ -1444,7 +1454,13 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
         }
     }
 
-    const combinedSystemPrompt = finalizedBasePrompt + destinyDirectives + "\n" + operationalMandate + "\n" + envAwareness + librarianReportSection;
+    let combinedSystemPrompt = finalizedBasePrompt + destinyDirectives + "\n" + operationalMandate + "\n" + envAwareness + librarianReportSection;
+    if (capabilities?.allowCodeExecution !== true && promptType !== 'agent') {
+        combinedSystemPrompt = combinedSystemPrompt
+            .replace(/<execute_code\b[^>]*>[\s\S]*?<\/execute_code>/gi, '')
+            .replace(/^[^\n]*\bexecute_code\b[^\n]*(?:\n|$)/gim, '')
+            .replace(/\n{3,}/g, '\n\n');
+    }
     return isFastMode ? stripLibrarianReferences(combinedSystemPrompt) : combinedSystemPrompt;
 }
 
@@ -2017,6 +2033,7 @@ export function parseFileTagAttributes(attrStr: string, rawContent?: string): Fi
     const pathRegex = /(?:^|\s+)(?:path|file_path|filepath|file|target|name|filename)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i;
     const pathMatch = cleanAttr.match(pathRegex);
     let filePath = pathMatch ? (pathMatch[1] || pathMatch[2] || "").trim() : "";
+    const hasExplicitPathAttr = !!filePath;
 
     // Fallback: Check if attribute string starts with an unkeyed path e.g. <file "main.py"> or <file main.py>
     if (!filePath) {
@@ -2030,7 +2047,7 @@ export function parseFileTagAttributes(attrStr: string, rawContent?: string): Fi
 
     filePath = filePath.replace(/^['"]|['"]$/g, '').trim();
 
-    if (!isValidFilePath(filePath)) {
+    if (!isValidFilePath(filePath, { allowExtensionless: hasExplicitPathAttr })) {
         return null;
     }
 
@@ -2081,9 +2098,17 @@ export function normalizePseudoFileBlocks(text: string): string {
         return `<<<<<<< SEARCH\n${s.trimEnd()}\n=======\n${r.trimStart()}\n>>>>>>> REPLACE`;
     });
 
+    const existingFileRanges: { start: number; end: number }[] = [];
+    const existingFileRegex = /^[ \t]*<file\b[^>]*>[\s\S]*?<\/\s*file(?:\s+[^>\r\n]*)?\s*>/gim;
+    let efm: RegExpExecArray | null;
+    while ((efm = existingFileRegex.exec(result)) !== null) {
+        existingFileRanges.push({ start: efm.index, end: efm.index + efm[0].length });
+    }
+
     const fileHeaderRegex = /(?:(?:\$file\$|\*\*File\*\*|^File)\s*:\s*[`"']?([^\s`"'\r\n]+)[`"']?\s*(?:(?:\$action\$|\*\*Action\*\*|Action)\s*:\s*[`"']?(\w+)[`"']?)?)([\s\S]*?)(?=(?:(?:\$file\$|\*\*File\*\*|^File)\s*:\s*[`"']?[^\s`"'\r\n]+|<file\b|$))/gim;
 
-    result = result.replace(fileHeaderRegex, (fullMatch, filePath, actionRaw, body) => {
+    result = result.replace(fileHeaderRegex, (fullMatch, filePath, actionRaw, body, offset) => {
+        if (existingFileRanges.some(r => offset >= r.start && offset < r.end)) return fullMatch;
         const cleanPath = (filePath || '').replace(/^[`"']|[`"']$/g, '').trim();
         if (!isValidFilePath(cleanPath)) return fullMatch;
         const hasAider = body.includes('<<<<<<< SEARCH');
@@ -2096,7 +2121,7 @@ export function normalizePseudoFileBlocks(text: string): string {
             action = 'write';
         }
 
-        if (body.includes('<file\b')) return fullMatch;
+        if (/<file\b/i.test(body)) return fullMatch;
 
         const hunks = body.match(/<<<<<<< SEARCH[\s\S]*?>>>>>>> REPLACE/g);
         if (hunks && hunks.length > 0) {
@@ -2147,14 +2172,20 @@ export function extractFileBlocks(text: string): ExtractedFileBlock[] {
 
     let activeFence: { char: string; len: number } | null = null;
     let pendingWrapperFence: { start: number; char: string; len: number } | null = null;
+    let inAiderHunk = false;
+    let inThinkingTag: string | null = null;
+    let processingBlockDepth = 0;
     let openBlock: {
         start: number;
         bodyStart: number;
         attrStr: string;
+        startedAtLineStart: boolean;
         wrapperFence?: { start: number; char: string; len: number };
     } | null = null;
 
     const explicitPathAttrRegex = /\b(?:path|file_path|filepath|file)\s*=\s*(?:["'][^"']+["']|[^\s>]+)/i;
+    const closeFileLineRegex = /^[ \t]*<\/\s*file(?:\s+[^>\r\n]*)?\s*>/i;
+    const closeFileSliceRegex = /^<\/\s*file(?:\s+[^>\r\n]*)?\s*>/i;
 
     const isValidOpenTag = (attrStr: string, isAtLineStart: boolean): boolean => {
         const fileAttrs = parseFileTagAttributes(attrStr);
@@ -2207,6 +2238,47 @@ export function extractFileBlocks(text: string): ExtractedFileBlock[] {
             isClosed: true
         });
         openBlock = null;
+        inAiderHunk = false;
+    };
+
+    const hasClosedFenceWithOuterCloseFile = (fromOffset: number, fence: { char: string; len: number }): boolean => {
+        let pos = fromOffset;
+        let sawClosingFence = false;
+        let openAfter = 0;
+        let closeAfter = 0;
+        while (pos < len) {
+            let nl = targetText.indexOf('\n', pos);
+            if (nl === -1) nl = len;
+            const l = targetText.slice(pos, nl).replace(/\r$/, '');
+            pos = nl + 1;
+
+            if (!sawClosingFence) {
+                const cf = l.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+                if (cf && cf[1][0] === fence.char && cf[1].length >= fence.len) {
+                    const tr = cf[2] || '';
+                    if (tr.trim() === '') {
+                        sawClosingFence = true;
+                        continue;
+                    }
+                    if (closeFileLineRegex.test(tr) && closeAfter >= openAfter) {
+                        return true;
+                    }
+                }
+            }
+
+            if (closeFileLineRegex.test(l)) {
+                closeAfter++;
+                if (sawClosingFence && closeAfter > openAfter) {
+                    return true;
+                }
+            } else {
+                const nf = l.match(/^[ \t]*<file\s+([^>\r\n]*?)>/i);
+                if (nf && !nf[1].trim().endsWith('/') && isValidOpenTag(nf[1] || '', true)) {
+                    openAfter++;
+                }
+            }
+        }
+        return false;
     };
 
     let lineStart = 0;
@@ -2219,6 +2291,15 @@ export function extractFileBlocks(text: string): ExtractedFileBlock[] {
         const nextLineStart = nlIdx === -1 ? len : nlIdx + 1;
         const lineText = targetText.slice(lineStart, lineEnd);
 
+        if (openBlock) {
+            const trimmedLine = lineText.trim();
+            if (/^<{7}\s*search\b/i.test(trimmedLine)) {
+                inAiderHunk = true;
+            } else if (/^>{7}\s*replace\b/i.test(trimmedLine)) {
+                inAiderHunk = false;
+            }
+        }
+
         // 1. Inside a fenced block (``` or ~~~)
         if (activeFence) {
             const closeFenceMatch = lineText.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
@@ -2229,7 +2310,7 @@ export function extractFileBlocks(text: string): ExtractedFileBlock[] {
                     lineStart = nextLineStart;
                     continue;
                 }
-                if (openBlock && /^[ \t]*<\/file>/i.test(trailing)) {
+                if (openBlock && closeFileLineRegex.test(trailing)) {
                     const colOffset = lineText.indexOf(trailing);
                     activeFence = null;
                     // Fall through to scan </file> from colOffset
@@ -2239,9 +2320,10 @@ export function extractFileBlocks(text: string): ExtractedFileBlock[] {
                             const endCol = findMatchingInlineBacktickEnd(lineText, col);
                             if (endCol !== -1) { col = endCol; continue; }
                         }
-                        if (openBlock && lineText[col] === '<' && /^<\/file>/i.test(lineText.slice(col))) {
-                            finalizeClosedBlock(lineStart + col, lineStart + col + 7);
-                            col += 7;
+                        const closeMatch = openBlock && lineText[col] === '<' ? lineText.slice(col).match(closeFileSliceRegex) : null;
+                        if (closeMatch) {
+                            finalizeClosedBlock(lineStart + col, lineStart + col + closeMatch[0].length);
+                            col += closeMatch[0].length;
                             continue;
                         }
                         col++;
@@ -2250,8 +2332,13 @@ export function extractFileBlocks(text: string): ExtractedFileBlock[] {
                     continue;
                 }
             }
-            lineStart = nextLineStart;
-            continue;
+            // If an unclosed fence is inside <file>, do not let it swallow a real outer </file>
+            if (openBlock && closeFileLineRegex.test(lineText) && !hasClosedFenceWithOuterCloseFile(nextLineStart, activeFence)) {
+                activeFence = null;
+            } else {
+                lineStart = nextLineStart;
+                continue;
+            }
         }
 
         // 2. Check if this line opens a fenced code block (``` or ~~~)
@@ -2297,39 +2384,53 @@ export function extractFileBlocks(text: string): ExtractedFileBlock[] {
 
                 if (openBlock) {
                     // Close when an open <file> is detected (start of line OR mid-line), outside fences & backticks
-                    if (/^<\/file>/i.test(slice)) {
-                        const closeEnd = lineStart + col + 7;
+                    const closeMatch = slice.match(closeFileSliceRegex);
+                    if (closeMatch) {
+                        const closeLen = closeMatch[0].length;
+                        const closeEnd = lineStart + col + closeLen;
                         let adjustedEnd = closeEnd;
                         if (!seenNonWhitespace) {
-                            const trailingAfterClose = lineText.slice(col + 7);
+                            const trailingAfterClose = lineText.slice(col + closeLen);
                             if (trailingAfterClose.trim() === '') {
                                 adjustedEnd = nextLineStart;
                             }
                         }
                         finalizeClosedBlock(lineStart + col, adjustedEnd);
-                        col += 7;
+                        col += closeLen;
                         seenNonWhitespace = true;
                         continue;
                     }
 
-                    // Line-start implicit recovery if a new valid <file ...> starts before </file>
-                    if (!seenNonWhitespace) {
-                        const nextOpenMatch = slice.match(/^<file\s+([^>]*?)>/i);
+                    // Line-start implicit recovery if a new valid <file ...> starts before </file> (outside Aider hunks)
+                    if (!seenNonWhitespace && !inAiderHunk) {
+                        const nextOpenMatch = slice.match(/^<file\s+([^>\r\n]*?)>/i);
                         if (nextOpenMatch && isValidOpenTag(nextOpenMatch[1] || '', true)) {
                             finalizeClosedBlock(lineStart + col, lineStart + col);
+                            if (nextOpenMatch[1].trim().endsWith('/')) {
+                                col += nextOpenMatch[0].length;
+                                seenNonWhitespace = true;
+                                continue;
+                            }
                             openBlock = {
                                 start: lineStart + col,
                                 bodyStart: lineStart + col + nextOpenMatch[0].length,
                                 attrStr: nextOpenMatch[1] || ''
                             };
+                            inAiderHunk = false;
                             col += nextOpenMatch[0].length;
                             seenNonWhitespace = true;
                             continue;
                         }
                     }
                 } else {
-                    const openMatch = slice.match(/^<file\s+([^>]*?)>/i);
+                    const openMatch = slice.match(/^<file\s+([^>\r\n]*?)>/i);
                     if (openMatch && isValidOpenTag(openMatch[1] || '', !seenNonWhitespace)) {
+                        if (openMatch[1].trim().endsWith('/')) {
+                            pendingWrapperFence = null;
+                            col += openMatch[0].length;
+                            seenNonWhitespace = true;
+                            continue;
+                        }
                         const wrapper = !seenNonWhitespace ? pendingWrapperFence || undefined : undefined;
                         openBlock = {
                             start: wrapper ? wrapper.start : lineStart + col,
@@ -2337,6 +2438,7 @@ export function extractFileBlocks(text: string): ExtractedFileBlock[] {
                             attrStr: openMatch[1] || '',
                             wrapperFence: wrapper
                         };
+                        inAiderHunk = false;
                         pendingWrapperFence = null;
                         col += openMatch[0].length;
                         seenNonWhitespace = true;

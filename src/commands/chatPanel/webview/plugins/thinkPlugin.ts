@@ -1,95 +1,214 @@
 import { TagPlugin, PluginContext } from '../pluginSystem.js';
+import { extractFileBlocks } from './fileOpPlugin.js';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
 
+const OPEN_THINK_RE = /<(think|thinking|thought|analysis|reasoning)\b[^>]*>/gi;
+const CLOSE_THINK_RE = /<\/(think|thinking|thought|analysis|reasoning)\s*>/gi;
+
+export function formatThoughtDuration(ms: number): string {
+    if (!Number.isFinite(ms) || ms < 0) return '';
+    const totalSecs = ms / 1000;
+    if (totalSecs < 60) {
+        return `${Math.max(0.1, totalSecs).toFixed(1)}s`;
+    }
+    const mins = Math.floor(totalSecs / 60);
+    const remSecs = Math.round(totalSecs % 60);
+    return `${mins}m ${remSecs}s`;
+}
+
+function getMessageWrapper(messageId: string): HTMLElement | null {
+    if (typeof document === 'undefined' || !messageId) return null;
+    try {
+        const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+            ? CSS.escape(messageId)
+            : messageId.replace(/["\\]/g, '\\$&');
+        return document.querySelector(`.message-wrapper[data-message-id="${escaped}"]`) as HTMLElement | null;
+    } catch {
+        return null;
+    }
+}
+
+function getTimingForIndex(
+    wrapper: HTMLElement | null,
+    thinkIdx: number,
+    isClosed: boolean
+): { startMs?: number; durationMs?: number } {
+    if (!wrapper) return {};
+
+    const liveTimings = (wrapper as any)._thinkTimings as Array<{ start: number; end?: number }> | undefined;
+    if (Array.isArray(liveTimings) && liveTimings[thinkIdx]) {
+        const t = liveTimings[thinkIdx];
+        return {
+            startMs: t.start,
+            durationMs: t.end !== undefined ? Math.max(0, t.end - t.start) : (isClosed ? Math.max(0, Date.now() - t.start) : undefined)
+        };
+    }
+
+    if (wrapper.dataset.thinkDurations) {
+        try {
+            const saved = JSON.parse(wrapper.dataset.thinkDurations);
+            if (Array.isArray(saved) && typeof saved[thinkIdx] === 'number') {
+                return { durationMs: Math.max(0, saved[thinkIdx]) };
+            }
+        } catch {}
+    }
+
+    if (thinkIdx === 0 && wrapper.dataset.thinkStartTime) {
+        const s = parseInt(wrapper.dataset.thinkStartTime, 10);
+        const e = wrapper.dataset.thinkEndTime ? parseInt(wrapper.dataset.thinkEndTime, 10) : undefined;
+        if (!isNaN(s)) {
+            return {
+                startMs: s,
+                durationMs: e !== undefined && !isNaN(e) ? Math.max(0, e - s) : (isClosed ? Math.max(0, Date.now() - s) : undefined)
+            };
+        }
+    }
+
+    if (!isClosed) {
+        const fallbackStart = parseInt(wrapper.dataset.firstTokenTime || wrapper.dataset.startTime || '', 10);
+        return { startMs: !isNaN(fallbackStart) ? fallbackStart : Date.now() };
+    }
+
+    return {};
+}
+
 export const thinkPlugin: TagPlugin = {
     id: 'think_tag',
-    tagPattern: /<think>/i,
+    tagPattern: /<(?:think|thinking|thought|analysis|reasoning)\b[^>]*>/i,
     extractBlocks: (text: string, context: PluginContext) => {
         const blocks: { html: string; start: number; end: number }[] = [];
         if (!text || typeof text !== 'string') return blocks;
 
-        const openTags = ['<think>', '<thinking>', '<thought>', '<analysis>', '<reasoning>'];
-        const closeTags = ['</think>', '</thinking>', '</thought>', '</analysis>', '</reasoning>'];
+        const protectedRanges: { start: number; end: number }[] = [
+            ...extractFileBlocks(text).map(b => ({ start: b.start, end: b.end }))
+        ];
+        const fenceOrInlineRe = /```[\s\S]*?(?:```|$)|`[^`\r\n]+`/g;
+        let fm: RegExpExecArray | null;
+        while ((fm = fenceOrInlineRe.exec(text)) !== null) {
+            protectedRanges.push({ start: fm.index, end: fm.index + fm[0].length });
+        }
 
+        const findContainingProtected = (pos: number) =>
+            protectedRanges.find(r => pos >= r.start && pos < r.end);
+
+        const wrapper = getMessageWrapper(context.messageId);
         let searchPos = 0;
         let thinkIndex = 0;
 
         while (searchPos < text.length) {
-            let earliestOpenIdx = -1;
-            let matchedOpenTag = '';
+            OPEN_THINK_RE.lastIndex = searchPos;
+            let openMatch: RegExpExecArray | null = null;
+            while ((openMatch = OPEN_THINK_RE.exec(text)) !== null) {
+                const inProtected = findContainingProtected(openMatch.index);
+                if (inProtected) {
+                    OPEN_THINK_RE.lastIndex = inProtected.end;
+                    continue;
+                }
+                break;
+            }
 
-            for (const ot of openTags) {
-                const idx = text.toLowerCase().indexOf(ot, searchPos);
-                if (idx !== -1 && (earliestOpenIdx === -1 || idx < earliestOpenIdx)) {
-                    earliestOpenIdx = idx;
-                    matchedOpenTag = ot;
+            let earliestOpenIdx = openMatch ? openMatch.index : -1;
+            let matchedTagName = openMatch ? openMatch[1].toLowerCase() : '';
+            let contentStart = openMatch ? openMatch.index + openMatch[0].length : -1;
+
+            if (searchPos === 0 && earliestOpenIdx === -1) {
+                CLOSE_THINK_RE.lastIndex = 0;
+                let danglingClose: RegExpExecArray | null = null;
+                while ((danglingClose = CLOSE_THINK_RE.exec(text)) !== null) {
+                    const inProtected = findContainingProtected(danglingClose.index);
+                    if (inProtected) {
+                        CLOSE_THINK_RE.lastIndex = inProtected.end;
+                        continue;
+                    }
+                    break;
+                }
+                if (danglingClose) {
+                    earliestOpenIdx = 0;
+                    matchedTagName = danglingClose[1].toLowerCase();
+                    contentStart = 0;
                 }
             }
 
             if (earliestOpenIdx === -1) break;
 
-            const contentStart = earliestOpenIdx + matchedOpenTag.length;
-            const matchingCloseTag = matchedOpenTag.replace('<', '</');
-
-            let closeIdx = text.toLowerCase().indexOf(matchingCloseTag, contentStart);
-            let isClosed = true;
-            let blockEnd = -1;
-
-            if (closeIdx !== -1) {
-                blockEnd = closeIdx + matchingCloseTag.length;
-            } else {
-                for (const ct of closeTags) {
-                    const cIdx = text.toLowerCase().indexOf(ct, contentStart);
-                    if (cIdx !== -1 && (closeIdx === -1 || cIdx < closeIdx)) {
-                        closeIdx = cIdx;
-                        blockEnd = cIdx + ct.length;
-                    }
+            CLOSE_THINK_RE.lastIndex = contentStart;
+            let closeMatch: RegExpExecArray | null = null;
+            let fallbackCloseMatch: RegExpExecArray | null = null;
+            while ((closeMatch = CLOSE_THINK_RE.exec(text)) !== null) {
+                const inProtected = findContainingProtected(closeMatch.index);
+                if (inProtected) {
+                    CLOSE_THINK_RE.lastIndex = inProtected.end;
+                    continue;
+                }
+                if (!fallbackCloseMatch) fallbackCloseMatch = closeMatch;
+                if (closeMatch[1].toLowerCase() === matchedTagName) {
+                    break;
                 }
             }
+            const chosenClose = closeMatch || fallbackCloseMatch;
+
+            const closeIdx = chosenClose ? chosenClose.index : -1;
+            let isClosed = true;
+            let blockEnd = chosenClose ? chosenClose.index + chosenClose[0].length : -1;
 
             if (closeIdx === -1) {
-                const remainingText = text.substring(contentStart);
-                const fileMatch = remainingText.search(/(?:^|\n)[ \t]*<file\b/i);
-                const nextFileIdx = fileMatch !== -1 ? contentStart + fileMatch : -1;
-                const nextFenceIdx = text.indexOf('```', contentStart);
-
-                let resumeAt = -1;
-                if (nextFileIdx !== -1 && nextFenceIdx !== -1) resumeAt = Math.min(nextFileIdx, nextFenceIdx);
-                else if (nextFileIdx !== -1) resumeAt = nextFileIdx;
-                else if (nextFenceIdx !== -1) resumeAt = nextFenceIdx;
-
-                if (resumeAt !== -1 && resumeAt > earliestOpenIdx) {
+                if (context.isFinal) {
+                    const remainingText = text.substring(contentStart);
+                    const fileMatch = remainingText.search(/(?:^|\n)[ \t]*<file\b/i);
+                    blockEnd = fileMatch !== -1 ? contentStart + fileMatch : text.length;
                     isClosed = true;
-                    blockEnd = resumeAt;
                 } else {
-                    isClosed = context.isFinal;
+                    isClosed = false;
                     blockEnd = text.length;
                 }
             }
 
-            const rawThought = (closeIdx !== -1 ? text.substring(contentStart, closeIdx) : text.substring(contentStart)).trim();
-            const parsedMarkdown = sanitizer.sanitize(marked.parse(rawThought || "*Thinking...*"));
+            const rawThought = (closeIdx !== -1
+                ? text.substring(contentStart, closeIdx)
+                : text.substring(contentStart, blockEnd)).trim();
+            const parsedMarkdown = sanitizer.sanitize(marked.parse(rawThought || '*Thinking...*') as string);
 
-            const iconHtml = isClosed 
-                ? '<span class="codicon codicon-circuit-board thought-status-icon"></span>' 
-                : '<span class="spinner thought-status-icon" style="width:10px; height:10px; border-width:2px; margin-right:6px; color: var(--thinking-color, #9b59b6); display: inline-block;"></span>';
+            const timing = getTimingForIndex(wrapper, thinkIndex, isClosed);
+            const liveElapsedMs = !isClosed && timing.startMs ? Math.max(0, Date.now() - timing.startMs) : undefined;
+            const durationStr = isClosed
+                ? (timing.durationMs !== undefined ? formatThoughtDuration(timing.durationMs) : '')
+                : (liveElapsedMs !== undefined ? formatThoughtDuration(liveElapsedMs) : '');
 
-            const cardId = `think-block-${context.messageId}-${thinkIndex++}`;
+            const iconHtml = isClosed
+                ? '<span class="codicon codicon-circuit-board think-status-icon"></span>'
+                : '<span class="spinner think-spinner"></span>';
+
+            const titleText = isClosed
+                ? (durationStr ? `Thought for ${durationStr}` : 'Thought Process')
+                : 'Thinking...';
+
+            const durationBadgeHtml = isClosed
+                ? (durationStr
+                    ? `<span class="think-duration" title="Reasoning duration">⏱ ${durationStr}</span>`
+                    : '')
+                : `<span class="think-duration is-live" data-start-ms="${timing.startMs || Date.now()}" title="Elapsed thinking time">⏱ ${durationStr || '0.1s'}</span>`;
+
+            const cardId = `think-block-${context.messageId}-${thinkIndex}`;
+            const detailsId = `think-details-${context.messageId}-${thinkIndex}`;
+            thinkIndex++;
 
             const html = `
-<div class="plan-scratchpad" id="${cardId}" data-closed="${isClosed ? 'true' : 'false'}" style="margin: 8px 0 12px 0; border-left: 3px solid var(--thinking-color, #9b59b6); box-sizing: border-box;">
-    <details style="border: none; background: transparent; margin: 0; box-shadow: none;">
-        <summary class="scratchpad-header" style="color: var(--thinking-color, #9b59b6); display: flex; align-items: center; justify-content: space-between; width: 100%; box-sizing: border-box; padding: 6px 12px; list-style: none; cursor: pointer;">
-            <div style="display: flex; align-items: center; gap: 6px;">
-                ${iconHtml}
-                <span style="font-weight: bold;" class="thought-title-label">🧠 Thought &amp; Reasoning${!isClosed ? ' (Live)...' : ''}</span>
+<div class="think-block" id="${cardId}" data-closed="${isClosed ? 'true' : 'false'}">
+    <details class="think-details" id="${detailsId}">
+        <summary class="think-summary">
+            <div class="think-summary-left">
+                <i class="codicon codicon-chevron-right think-chevron"></i>
+                <span class="think-icon-slot">${iconHtml}</span>
+                <span class="thought-title-label">${titleText}</span>
             </div>
-            <span class="think-duration" style="font-size: 10px; opacity: 0.6; margin-left: auto; padding-right: 12px;">${isClosed ? '' : 'thinking...'}</span>
+            <div class="think-summary-right">
+                ${durationBadgeHtml}
+            </div>
         </summary>
-        <div class="scratchpad-content markdown-body" style="padding: 10px 15px; font-size:11.5px; opacity:0.95; line-height: 1.5; background:rgba(0,0,0,0.08); border-radius:0 0 6px 6px;">
+        <div class="think-body markdown-body">
             ${parsedMarkdown}
         </div>
     </details>
@@ -106,7 +225,25 @@ export const thinkPlugin: TagPlugin = {
 
         return blocks;
     },
-    render: () => ''
+    render: () => '',
+    initialize: (container: HTMLElement) => {
+        container.querySelectorAll('.think-duration.is-live[data-start-ms]').forEach((el: any) => {
+            if (el._thinkTimer) return;
+            const timer = window.setInterval(() => {
+                const block = el.closest('.think-block');
+                if (!block || block.getAttribute('data-closed') === 'true' || !el.classList.contains('is-live') || !document.body.contains(el)) {
+                    clearInterval(timer);
+                    delete el._thinkTimer;
+                    return;
+                }
+                const startMs = parseInt(el.getAttribute('data-start-ms') || '0', 10);
+                if (startMs > 0) {
+                    el.textContent = `⏱ ${formatThoughtDuration(Math.max(0, Date.now() - startMs))}`;
+                }
+            }, 250);
+            el._thinkTimer = timer;
+        });
+    }
 };
 
 export default thinkPlugin;

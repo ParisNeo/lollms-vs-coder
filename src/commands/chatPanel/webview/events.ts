@@ -1390,8 +1390,15 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                 gitWorkflow: dom.capGitWorkflow?.checked ?? false,
                 includeGitInfo: dom.capIncludeGitInfo?.checked ?? false,
                 fastMode: state.capabilities?.fastMode !== false,
+                allowCodeExecution: state.capabilities?.allowCodeExecution === true,
+                autoExecuteScouting: state.capabilities?.autoExecuteScouting === true,
+                autoExecuteCode: state.capabilities?.allowCodeExecution === true && state.capabilities?.autoExecuteCode === true,
+                requireExplicitEndTag: state.capabilities?.requireExplicitEndTag === true,
+                autoMaxRounds: state.capabilities?.autoMaxRounds,
+                autoApply: (document.getElementById('cap-autoExecuteTools') as HTMLInputElement)?.checked ?? dom.capAutoApply?.checked ?? false,
                 autoExecuteTools: (document.getElementById('cap-autoExecuteTools') as HTMLInputElement)?.checked ?? false,
-                enableTTS: (document.getElementById('cap-enableTTS') as HTMLInputElement)?.checked ?? true,
+                autoMode: (document.getElementById('cap-autoExecuteTools') as HTMLInputElement)?.checked ?? false,
+                enableTTS: dom.capEnableTTS?.checked ?? true,
                 enableSTT: (document.getElementById('cap-enableSTT') as HTMLInputElement)?.checked ?? true,
                 herdMode: dom.capHerdMode?.checked ?? false,
                 herdParallelGeneration: dom.capHerdParallelGeneration?.checked ?? false,
@@ -2878,6 +2885,18 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         };
     }
 
+    const wizardRefreshModelsBtn = document.getElementById('wizard-refresh-models-btn') as HTMLButtonElement | null;
+    if (wizardRefreshModelsBtn) {
+        wizardRefreshModelsBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const iconEl = wizardRefreshModelsBtn.querySelector('.codicon');
+            if (iconEl) iconEl.classList.add('spin');
+            wizardRefreshModelsBtn.disabled = true;
+            vscode.postMessage({ command: 'refreshModels' });
+        };
+    }
+
     const handleWizardSubmit = (sendToAi: boolean) => {
         const promptText = dom.wizardPrompt ? dom.wizardPrompt.value.trim() : '';
         const stagedImages = (window as any).wizardStagedImages || [];
@@ -3029,6 +3048,147 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             const newSettings: Record<string, any> = {};
             folders.forEach((f: any) => newSettings[f.uri.toString()] = { tree: false, content: false });
             vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { folderSettings: newSettings } });
+        };
+    }
+
+    // --- INTER-PROJECT PROMPT GENERATOR MODAL EVENTS ---
+    const interModal = document.getElementById('inter-project-prompt-modal');
+    const interCloseBtn = document.getElementById('inter-project-close-btn');
+    const interCancelBtn = document.getElementById('inter-project-cancel-btn');
+    const interGenBtn = document.getElementById('inter-project-generate-btn');
+    const interReqInput = document.getElementById('inter-project-request-input') as HTMLTextAreaElement | null;
+    const interCopyBtn = document.getElementById('inter-project-copy-btn') as HTMLButtonElement | null;
+    const interSaveBtn = document.getElementById('inter-project-save-btn') as HTMLButtonElement | null;
+    const interPreviewBtn = document.getElementById('inter-project-view-preview-btn');
+    const interRawBtn = document.getElementById('inter-project-view-raw-btn');
+    const interPreviewEl = document.getElementById('inter-project-output-preview');
+    const interRawEl = document.getElementById('inter-project-output-raw') as HTMLTextAreaElement | null;
+
+    const closeInterProjectModal = () => {
+        if (interModal) {
+            interModal.style.display = 'none';
+            interModal.classList.remove('visible');
+        }
+    };
+
+    if (interCloseBtn) interCloseBtn.onclick = closeInterProjectModal;
+    if (interCancelBtn) interCancelBtn.onclick = closeInterProjectModal;
+    if (interModal) {
+        interModal.addEventListener('click', (e) => {
+            if (e.target === interModal) closeInterProjectModal();
+        });
+    }
+
+    const triggerInterProjectGeneration = () => {
+        import('./ui.js').then(ui => {
+            if (ui.interProjectPromptState.isGenerating) {
+                vscode.postMessage({ command: 'cancelInterProjectPrompt' });
+                return;
+            }
+            const reqText = interReqInput?.value?.trim() || '';
+            if (!reqText) {
+                vscode.postMessage({ command: 'showError', message: 'Please describe what the other project\'s agent needs to accomplish.' });
+                interReqInput?.focus();
+                return;
+            }
+
+            const mode = (document.getElementById('inter-project-mode-select') as HTMLSelectElement | null)?.value || 'integration';
+            const model = (document.getElementById('inter-project-model-select') as HTMLSelectElement | null)?.value || undefined;
+            const targetProject = (document.getElementById('inter-project-target-input') as HTMLInputElement | null)?.value?.trim() || '';
+            const includeActiveFiles = (document.getElementById('inter-project-inc-files') as HTMLInputElement | null)?.checked ?? true;
+            const includeArchitecture = (document.getElementById('inter-project-inc-arch') as HTMLInputElement | null)?.checked ?? true;
+            const includeBriefing = (document.getElementById('inter-project-inc-briefing') as HTMLInputElement | null)?.checked ?? true;
+            const includeHistory = (document.getElementById('inter-project-inc-history') as HTMLInputElement | null)?.checked ?? false;
+
+            ui.setInterProjectGeneratingState(true);
+            ui.streamInterProjectPromptChunk('');
+
+            vscode.postMessage({
+                command: 'generateInterProjectPrompt',
+                request: reqText,
+                mode,
+                model,
+                targetProject,
+                options: {
+                    includeActiveFiles,
+                    includeArchitecture,
+                    includeBriefing,
+                    includeHistory
+                }
+            });
+        });
+    };
+
+    if (interGenBtn) interGenBtn.onclick = triggerInterProjectGeneration;
+    if (interReqInput) {
+        interReqInput.addEventListener('keydown', (e: KeyboardEvent) => {
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                triggerInterProjectGeneration();
+            }
+        });
+    }
+
+    if (interPreviewBtn && interRawBtn && interPreviewEl && interRawEl) {
+        interPreviewBtn.onclick = () => {
+            interPreviewBtn.classList.add('apply-btn');
+            interPreviewBtn.classList.remove('secondary-btn');
+            interRawBtn.classList.remove('apply-btn');
+            interRawBtn.classList.add('secondary-btn');
+            interPreviewEl.style.display = 'block';
+            interRawEl.style.display = 'none';
+            import('./ui.js').then(ui => {
+                ui.interProjectPromptState.viewMode = 'preview';
+                ui.streamInterProjectPromptChunk(interRawEl.value || ui.interProjectPromptState.generatedText);
+            });
+        };
+        interRawBtn.onclick = () => {
+            interRawBtn.classList.add('apply-btn');
+            interRawBtn.classList.remove('secondary-btn');
+            interPreviewBtn.classList.remove('apply-btn');
+            interPreviewBtn.classList.add('secondary-btn');
+            interPreviewEl.style.display = 'none';
+            interRawEl.style.display = 'block';
+            import('./ui.js').then(ui => {
+                ui.interProjectPromptState.viewMode = 'raw';
+                interRawEl.value = ui.interProjectPromptState.generatedText;
+            });
+        };
+        interRawEl.oninput = () => {
+            import('./ui.js').then(ui => {
+                ui.interProjectPromptState.generatedText = interRawEl.value;
+                const hasText = interRawEl.value.trim().length > 0;
+                if (interCopyBtn) interCopyBtn.disabled = !hasText;
+                if (interSaveBtn) interSaveBtn.disabled = !hasText;
+            });
+        };
+    }
+
+    if (interCopyBtn) {
+        interCopyBtn.onclick = () => {
+            import('./ui.js').then(ui => {
+                const text = (interRawEl && interRawEl.style.display !== 'none')
+                    ? interRawEl.value
+                    : ui.interProjectPromptState.generatedText;
+                if (!text.trim()) return;
+                vscode.postMessage({ command: 'copyToClipboard', text });
+                try { navigator.clipboard.writeText(text); } catch {}
+                const origHtml = interCopyBtn.innerHTML;
+                interCopyBtn.innerHTML = '<i class="codicon codicon-check"></i> Copied!';
+                setTimeout(() => { interCopyBtn.innerHTML = origHtml; }, 1800);
+            });
+        };
+    }
+
+    if (interSaveBtn) {
+        interSaveBtn.onclick = () => {
+            import('./ui.js').then(ui => {
+                const text = (interRawEl && interRawEl.style.display !== 'none')
+                    ? interRawEl.value
+                    : ui.interProjectPromptState.generatedText;
+                if (!text.trim()) return;
+                vscode.postMessage({ command: 'saveCodeToFile', content: text, language: 'markdown' });
+            });
         };
     }
 
@@ -3443,10 +3603,6 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
 
             if (id === 'save-context-btn') {
                 vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'saveContext', params: {} } });
-            } else if (id === 'compress-history-context-btn' || id === 'compress-history-btn') {
-                vscode.postMessage({ command: 'compressDiscussionHistory' });
-            } else if (id === 'new-discussion-context-header-btn' || id === 'new-chat-same-context-icon-btn' || id === 'new-discussion-same-files-btn') {
-                vscode.postMessage({ command: 'newDiscussionWithSameContext' });
             } else if (id === 'load-context-btn') {
                 vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'loadContext', params: {} } });
             } else if (id === 'add-context-btn') {
@@ -3575,11 +3731,20 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                 data[radios[0].name] = labelText;
             }
 
-            const textInputs = Array.from(formBlock.querySelectorAll('input[type="text"], input[type="number"], textarea')) as (HTMLInputElement | HTMLTextAreaElement)[];
+            const textInputs = Array.from(formBlock.querySelectorAll('input:not([type="radio"]):not([type="checkbox"]):not([type="submit"]):not([type="button"]):not([type="hidden"]), textarea, select')) as (HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement)[];
             textInputs.forEach(input => { if (input.name) data[input.name] = input.value; });
 
             const checkboxes = Array.from(formBlock.querySelectorAll('input[type="checkbox"]')) as HTMLInputElement[];
-            checkboxes.forEach(input => { if (input.checked && input.name) data[input.name] = input.value; });
+            const checkboxGroups: Record<string, string[]> = {};
+            checkboxes.forEach(input => {
+                if (input.checked && input.name) {
+                    if (!checkboxGroups[input.name]) checkboxGroups[input.name] = [];
+                    checkboxGroups[input.name].push(input.value || 'yes');
+                }
+            });
+            Object.entries(checkboxGroups).forEach(([k, vals]) => {
+                data[k] = vals.join(', ');
+            });
 
             // If still empty (e.g. description-only form with no inputs), record a confirmation decision
             if (Object.keys(data).length === 0) {
@@ -3593,7 +3758,8 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             formBtn.innerHTML = '<span class="codicon codicon-loading spin"></span> Validating...';
 
             // Replace interactive form with a clean confirmed card in-place
-            const confirmedSummary = Object.entries(data).map(([k, v]) => `<strong>${k}</strong>: <code>${v}</code>`).join(', ');
+            const esc = (s: string) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            const confirmedSummary = Object.entries(data).map(([k, v]) => `<strong>${esc(k)}</strong>: <code>${esc(v)}</code>`).join(', ');
             const confirmedCard = document.createElement('div');
             confirmedCard.className = 'form-confirmed-card';
             confirmedCard.style.cssText = 'padding: 8px 12px; margin: 8px 0; background: rgba(56, 142, 60, 0.1); border: 1px solid var(--vscode-charts-green); border-radius: 6px; font-size: 11px; color: var(--vscode-charts-green); display: flex; align-items: center; gap: 8px;';

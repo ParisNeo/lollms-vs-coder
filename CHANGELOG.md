@@ -4,6 +4,10 @@ Of course! Here is the updated changelog for version **0.3.7**, incorporating th
 
 All notable changes to the "Lollms VS Coder" extension will be documented in this file.
 
+## [2026-11-23 03:17]
+
+- Fix minor version in package.json to 1.1.1
+
 ## [2026-11-18 22:50]
 
 - Fix: Update version to 1.0.97 and remove deprecated component (other.ts)

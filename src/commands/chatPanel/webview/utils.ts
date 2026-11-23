@@ -416,7 +416,7 @@ export function matchesFilePattern(filePath: string, query: string, fileName?: s
     return createFilePatternMatcher(query)(filePath, fileName);
 }
 
-export function isValidFilePath(filePath: string): boolean {
+export function isValidFilePath(filePath: string, options?: { allowExtensionless?: boolean }): boolean {
     if (!filePath || typeof filePath !== 'string') return false;
     let clean = filePath.trim().replace(/^['"`]|['"`]$/g, '');
 
@@ -446,6 +446,11 @@ export function isValidFilePath(filePath: string): boolean {
         '.eslintrc', '.editorconfig', 'changelog.md', 'readme.md'
     ]);
     if (knownFiles.has(base.toLowerCase())) return true;
+
+    if (options?.allowExtensionless) {
+        if (/^(?:true|false)$/i.test(clean)) return false;
+        return true;
+    }
 
     const extMatch = base.match(/\.([a-zA-Z0-9_\-]+)$/);
     if (!extMatch) return false;
@@ -882,6 +887,7 @@ export function parseFileTagAttributes(attrStr: string, rawContent?: string): Fi
     const pathRegex = /(?:^|\s+)(?:path|file_path|filepath|file|target|name|filename)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i;
     const pathMatch = cleanAttr.match(pathRegex);
     let filePath = pathMatch ? (pathMatch[1] || pathMatch[2] || "").trim() : "";
+    const hasExplicitPathAttr = !!filePath;
 
     // Fallback: Check if attribute string starts with unkeyed path
     if (!filePath) {
@@ -895,7 +901,7 @@ export function parseFileTagAttributes(attrStr: string, rawContent?: string): Fi
 
     filePath = filePath.replace(/^['"]|['"]$/g, '').trim();
 
-    if (!isValidFilePath(filePath)) {
+    if (!isValidFilePath(filePath, { allowExtensionless: hasExplicitPathAttr })) {
         return null;
     }
 

@@ -475,8 +475,8 @@
                             </div>
                             <div class="menu-separator"></div>
                             <button class="menu-item" id="openCompanionMenuBtn"><i class="codicon codicon-sparkle"></i><span>Lollms Companion (Quick Edit - Ctrl+Shift+L)</span></button>
-                            <button class="menu-item" id="newDiscussionSameContextBtn"><i class="codicon codicon-repo-forked"></i><span>New Discussion (Same Files & Muted States)</span></button>
-                            <button class="menu-item" id="forkAndCompressMenuBtn"><i class="codicon codicon-git-pull-request"></i><span>Fork & Compress Chat History</span></button>
+                            <button class="menu-item" id="newDiscussionSameContextBtn"><i class="codicon codicon-repo-forked"></i><span>Simple Fork (Files &amp; Mutings Only)</span></button>
+                            <button class="menu-item" id="forkAndCompressMenuBtn"><i class="codicon codicon-git-pull-request"></i><span>Fork &amp; Compress Chat History</span></button>
                             <button class="menu-item" id="compressHistoryMenuBtn"><i class="codicon codicon-fold"></i><span>Compress Chat History (In-Place)</span></button>
                             <button class="menu-item" id="discussionToolsButton"><i class="codicon codicon-settings"></i><span>Discussion Settings</span></button>
                             <button class="menu-item" id="agentToolsButton"><i class="codicon codicon-briefcase"></i><span>Agent Settings</span></button>
@@ -1061,13 +1061,13 @@
                         <label class="switch"><input type="checkbox" id="cap-autoFix" checked><span class="slider"></span></label>
                         <label for="cap-autoFix"><strong>Auto Fix:</strong> Autonomous repair of failed patches</label>
                     </div>
-                    <div class="checkbox-container">
+                    <div class="checkbox-container" style="display:none;">
                         <label class="switch"><input type="checkbox" id="cap-autoApply"><span class="slider"></span></label>
                         <label for="cap-autoApply"><strong>Auto Apply:</strong> Automatically apply code blocks</label>
                     </div>
                     <div class="checkbox-container">
                         <label class="switch"><input type="checkbox" id="cap-autoExecuteTools"><span class="slider"></span></label>
-                        <label for="cap-autoExecuteTools"><strong>Auto-Execute Tools:</strong> Automatically run tools sent during generation &amp; trigger next round</label>
+                        <label for="cap-autoExecuteTools"><strong>Auto Mode:</strong> Automatically apply &amp; fix patches, execute context/tool calls, and split overflowing context into phases</label>
                     </div>
                     <div id="automation-sub-options" style="margin-left: 25px; opacity: 0.5; pointer-events: none;">
                         <div class="checkbox-container">
@@ -1470,6 +1470,117 @@
                     <button type="button" id="repair-cancel-btn" class="code-action-btn secondary-btn" style="height: 30px; padding: 0 14px;">Cancel</button>
                     <button type="button" id="repair-accept-btn" class="code-action-btn apply-btn" style="height: 30px; padding: 0 16px; font-weight: bold; background: var(--vscode-charts-green) !important; color: white !important;" title="Accept the file's current state and close the studio">
                         <i class="codicon codicon-check"></i> Accept & Keep File
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 🔗 INTER-PROJECT PROMPT GENERATOR MODAL -->
+    <div id="inter-project-prompt-modal" class="modal" style="z-index: 112000 !important;">
+        <div class="modal-content" style="max-width: 1100px; width: 95%; height: 86vh; max-height: 860px; display: flex; flex-direction: column;">
+            <div class="modal-header" style="padding: 10px 18px; border-bottom: 1px solid var(--vscode-widget-border); display: flex; justify-content: space-between; align-items: center; background: var(--vscode-editorWidget-background);">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div style="width: 28px; height: 28px; border-radius: 6px; background: rgba(0, 122, 204, 0.15); color: var(--vscode-charts-blue); display: flex; align-items: center; justify-content: center; font-size: 16px;">
+                        <i class="codicon codicon-references"></i>
+                    </div>
+                    <div>
+                        <h2 style="margin: 0; font-size: 13px; font-weight: 800; letter-spacing: 0.4px;">Inter-Project Agent Prompt Generator</h2>
+                        <div style="font-size: 10px; opacity: 0.7;">Generate a complete, self-contained prompt &amp; technical guide for an agent in another project</div>
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span id="inter-project-status-badge" class="file-token-badge weight-light" style="font-size: 10px; padding: 2px 8px;">Ready</span>
+                    <span class="close-btn" id="inter-project-close-btn">&times;</span>
+                </div>
+            </div>
+
+            <div class="modal-body" style="padding: 0; flex: 1; min-height: 0; display: flex; overflow: hidden;">
+                <!-- LEFT COLUMN: Request Configuration & Prompt -->
+                <div style="flex: 0.95; min-width: 300px; display: flex; flex-direction: column; border-right: 1px solid var(--vscode-widget-border); background: var(--vscode-sideBar-background); padding: 14px; gap: 12px; overflow-y: auto;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                        <div class="form-group" style="margin: 0;">
+                            <label for="inter-project-mode-select" style="font-size: 10px; font-weight: 700; text-transform: uppercase; opacity: 0.75; display: block; margin-bottom: 4px;">Relationship Mode</label>
+                            <select id="inter-project-mode-select" class="menu-select" style="width: 100%; margin: 0; height: 28px;">
+                                <option value="integration" selected>🔗 Uses / Integrates This Project</option>
+                                <option value="inspiration">💡 Inspired By / Port Patterns</option>
+                                <option value="migration">🤝 Contract Sync / Migration</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin: 0;">
+                            <label for="inter-project-model-select" style="font-size: 10px; font-weight: 700; text-transform: uppercase; opacity: 0.75; display: block; margin-bottom: 4px;">Generator Model</label>
+                            <select id="inter-project-model-select" class="menu-select" style="width: 100%; margin: 0; height: 28px;"></select>
+                        </div>
+                    </div>
+
+                    <div class="form-group" style="margin: 0;">
+                        <label for="inter-project-target-input" style="font-size: 10px; font-weight: 700; text-transform: uppercase; opacity: 0.75; display: block; margin-bottom: 4px;">Target Project / Stack (Optional)</label>
+                        <input type="text" id="inter-project-target-input" placeholder="e.g. mobile-client (React Native / TypeScript) or analytics-worker (Python)" style="width: 100%; box-sizing: border-box; height: 28px; padding: 4px 8px; font-size: 11.5px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px;">
+                    </div>
+
+                    <div style="padding: 8px 10px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 6px; display: flex; flex-direction: column; gap: 6px;">
+                        <span style="font-size: 10px; font-weight: 800; text-transform: uppercase; opacity: 0.75;">Source Project Grounding</span>
+                        <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; cursor: pointer;">
+                            <input type="checkbox" id="inter-project-inc-files" checked style="margin: 0;">
+                            <span>Active Context Files [C] &amp; Project Tree</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; cursor: pointer;">
+                            <input type="checkbox" id="inter-project-inc-arch" checked style="margin: 0;">
+                            <span>Architecture Graph &amp; Structure Guide</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; cursor: pointer;">
+                            <input type="checkbox" id="inter-project-inc-briefing" checked style="margin: 0;">
+                            <span>Mission Briefing &amp; Project Conventions</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; cursor: pointer;">
+                            <input type="checkbox" id="inter-project-inc-history" style="margin: 0;">
+                            <span>Include Recent Discussion History</span>
+                        </label>
+                    </div>
+
+                    <div class="form-group" style="margin: 0; display: flex; flex-direction: column; flex: 1;">
+                        <label for="inter-project-request-input" style="font-size: 10px; font-weight: 700; text-transform: uppercase; opacity: 0.75; display: block; margin-bottom: 4px;">What should the other project's agent achieve?</label>
+                        <textarea id="inter-project-request-input" class="commit-textarea" style="flex: 1; min-height: 150px; margin: 0; width: 100%; box-sizing: border-box; font-size: 12px; resize: vertical;" placeholder="Describe what the other agent needs to build, integrate, or adapt from this project...&#10;&#10;Example: Instruct the agent in our frontend repo on how to connect to this server's streaming chat API, handle authentication headers, and parse <file> mutation events."></textarea>
+                        <div style="font-size: 10px; opacity: 0.65; margin-top: 4px;">Press <kbd>Ctrl+Enter</kbd> to generate</div>
+                    </div>
+
+                    <button type="button" id="inter-project-generate-btn" class="code-action-btn apply-btn" style="width: 100%; height: 34px; justify-content: center; font-weight: bold; font-size: 12px;">
+                        <i class="codicon codicon-sparkle"></i> Generate Agent Prompt Document
+                    </button>
+                </div>
+
+                <!-- RIGHT COLUMN: Generated Prompt Document Preview / Raw Editor -->
+                <div style="flex: 1.3; min-width: 0; display: flex; flex-direction: column; background: var(--vscode-editor-background);">
+                    <div style="padding: 8px 14px; background: var(--vscode-editor-inactiveSelectionBackground); border-bottom: 1px solid var(--vscode-widget-border); display: flex; justify-content: space-between; align-items: center;">
+                        <span style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.85; display: flex; align-items: center; gap: 6px;">
+                            <i class="codicon codicon-file-text" style="color: var(--vscode-charts-blue);"></i>
+                            <span>Generated Handoff Prompt Document</span>
+                        </span>
+                        <div style="display: flex; gap: 6px;">
+                            <button type="button" id="inter-project-view-preview-btn" class="code-action-btn apply-btn" style="height: 22px; font-size: 10px; padding: 0 8px; font-weight: bold;">Preview</button>
+                            <button type="button" id="inter-project-view-raw-btn" class="code-action-btn secondary-btn" style="height: 22px; font-size: 10px; padding: 0 8px;">Edit Raw</button>
+                        </div>
+                    </div>
+
+                    <div id="inter-project-output-preview" class="markdown-body" style="flex: 1; min-height: 0; overflow-y: auto; padding: 16px; font-size: 12px; line-height: 1.55;">
+                        <div style="opacity: 0.6; text-align: center; padding: 40px 20px;">
+                            <i class="codicon codicon-references" style="font-size: 28px; display: block; margin-bottom: 10px; color: var(--vscode-charts-blue);"></i>
+                            Describe your cross-project objective on the left and click <strong>Generate Agent Prompt Document</strong>.
+                        </div>
+                    </div>
+                    <textarea id="inter-project-output-raw" style="display: none; flex: 1; min-height: 0; border: none; outline: none; padding: 14px; background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; line-height: 1.5; resize: none;"></textarea>
+                </div>
+            </div>
+
+            <div class="modal-footer" style="padding: 10px 18px; border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-editorWidget-background); display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-size: 11px; opacity: 0.75;">Copy the generated document and paste it directly to the agent in your other project.</span>
+                <div style="display: flex; gap: 8px;">
+                    <button type="button" id="inter-project-cancel-btn" class="code-action-btn secondary-btn" style="height: 30px; padding: 0 14px;">Close</button>
+                    <button type="button" id="inter-project-save-btn" class="code-action-btn secondary-btn" style="height: 30px; padding: 0 12px;" disabled>
+                        <i class="codicon codicon-save"></i> Save .md
+                    </button>
+                    <button type="button" id="inter-project-copy-btn" class="code-action-btn apply-btn" style="height: 30px; padding: 0 16px; font-weight: bold;" disabled>
+                        <i class="codicon codicon-copy"></i> Copy Prompt Document
                     </button>
                 </div>
             </div>
@@ -2396,7 +2507,12 @@
                     <div style="display:grid; grid-template-columns: 1fr 1fr; gap:14px;">
                         <div class="form-group" style="margin: 0;">
                             <label for="wizard-model">Target Model</label>
-                            <select id="wizard-model" style="width:100%;"></select>
+                            <div style="display: flex; align-items: center; gap: 6px;">
+                                <select id="wizard-model" style="flex: 1; min-width: 0;"></select>
+                                <button type="button" id="wizard-refresh-models-btn" class="code-action-btn secondary-btn" style="height: 34px; width: 34px; padding: 0; justify-content: center; flex-shrink: 0;" title="Refresh models list">
+                                    <i class="codicon codicon-refresh"></i>
+                                </button>
+                            </div>
                         </div>
                         <div class="form-group" style="margin: 0;">
                             <label for="wizard-personality">Specialist Persona</label>

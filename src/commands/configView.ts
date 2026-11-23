@@ -14,6 +14,7 @@ export class SettingsPanel {
   private readonly _processManager: ProcessManager;
   private readonly _personalityManager: PersonalityManager;
   private _disposables: vscode.Disposable[] = [];
+  private _isDisposed = false;
   
   private _pendingConfig = {
     apiKey: '',
@@ -140,9 +141,14 @@ export class SettingsPanel {
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, processManager: ProcessManager, personalityManager: PersonalityManager) {
     const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
 
-    if (SettingsPanel.currentPanel) {
-      SettingsPanel.currentPanel._panel.reveal(column);
-      return;
+    if (SettingsPanel.currentPanel && !SettingsPanel.currentPanel._isDisposed) {
+      try {
+        SettingsPanel.currentPanel._panel.reveal(column);
+        return;
+      } catch (err) {
+        Logger.warn('[ConfigView] Existing panel could not be revealed, recreating.', err);
+        SettingsPanel.currentPanel.dispose();
+      }
     }
 
     const panel = vscode.window.createWebviewPanel(
@@ -291,11 +297,50 @@ export class SettingsPanel {
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
     this._personalityManager.onDidChange(() => {
-        this._panel.webview.postMessage({ 
+        this._postMessage({ 
             command: 'updatePersonalities', 
             personalities: this._personalityManager.getPersonalities() 
         });
     }, null, this._disposables);
+  }
+
+  public dispose() {
+    if (this._isDisposed) {
+      return;
+    }
+    this._isDisposed = true;
+    if (SettingsPanel.currentPanel === this) {
+      SettingsPanel.currentPanel = undefined;
+    }
+
+    while (this._disposables.length) {
+      const disposable = this._disposables.pop();
+      if (disposable) {
+        try {
+          disposable.dispose();
+        } catch (err) {
+          Logger.warn('[ConfigView] Error disposing resource:', err);
+        }
+      }
+    }
+
+    try {
+      this._panel.dispose();
+    } catch (err) {
+      Logger.warn('[ConfigView] Error disposing panel:', err);
+    }
+  }
+
+  private _postMessage(message: any) {
+    if (this._isDisposed) {
+      return;
+    }
+    try {
+      this._panel.webview.postMessage(message);
+    } catch (err) {
+      Logger.warn('[ConfigView] Failed to postMessage (webview disposed):', err);
+      this.dispose();
+    }
   }
 
   private async handleImportConnection() {
@@ -352,7 +397,7 @@ export class SettingsPanel {
             }
 
             Object.assign(this._pendingConfig, imported);
-            this._panel.webview.postMessage({ command: 'refreshForm', config: this._pendingConfig });
+            this._postMessage({ command: 'refreshForm', config: this._pendingConfig });
             vscode.window.showInformationMessage("Connection settings imported successfully.");
         } catch (e) {
             vscode.window.showErrorMessage("Failed to parse config file.");
@@ -413,6 +458,7 @@ export class SettingsPanel {
   private _setWebviewMessageListener(webview: vscode.Webview) {
     webview.onDidReceiveMessage(
         async (message: { command: string; key?: string; value?: any; profiles?: any[]; defaultId?: string }) => {
+          if (this._isDisposed) return;
           Logger.info(`[ConfigView] Received command: ${message.command}`);
 
           switch (message.command) {
@@ -473,7 +519,7 @@ export class SettingsPanel {
                         const newProfiles = JSON.parse(Buffer.from(fileData).toString());
                         if(Array.isArray(newProfiles)) {
                             this._pendingConfig.responseProfiles = newProfiles;
-                            this._panel.webview.postMessage({ command: 'refreshProfiles', profiles: newProfiles });
+                            this._postMessage({ command: 'refreshProfiles', profiles: newProfiles });
                         }
                     } catch(e) { vscode.window.showErrorMessage("Invalid profile file."); }
                 }
@@ -499,7 +545,7 @@ export class SettingsPanel {
               });
               if (uris && uris[0]) {
                   this._pendingConfig.sslCertPath = uris[0].fsPath;
-                  this._panel.webview.postMessage({ command: 'updateCertPath', path: uris[0].fsPath });
+                  this._postMessage({ command: 'updateCertPath', path: uris[0].fsPath });
               }
               return;
             
@@ -525,7 +571,7 @@ export class SettingsPanel {
                 const testApi = new LollmsAPI(testConfig);
                 const result = await testApi.testConnection();
                 
-                this._panel.webview.postMessage({ command: 'testConnectionResult', success: result.success });
+                this._postMessage({ command: 'testConnectionResult', success: result.success });
 
                 if (result.success) {
                     vscode.window.showInformationMessage(result.message, { modal: true });
@@ -695,7 +741,7 @@ export class SettingsPanel {
                       vscode.commands.executeCommand('lollms-vs-coder.runOnboardingPipeline');
                   });
                   
-                  this._panel.webview.postMessage({ 
+                  this._postMessage({ 
                     command: 'configSaved', 
                     newConfig: updatedConfig 
                   });
@@ -794,13 +840,13 @@ export class SettingsPanel {
                 const tempApi = new LollmsAPI(tempConfig); 
                 const models = await tempApi.getModels(true); 
 
-                if (this._panel && !(this as any)._isDisposed) {
-                    this._panel.webview.postMessage({ command: 'modelsList', models: models || [] });
+                if (!this._isDisposed) {
+                    this._postMessage({ command: 'modelsList', models: models || [] });
                 }
               } catch (e: any) {
                 Logger.error(`[ConfigView] Cumulative model fetch failed: ${e.message}`);
-                if (this._panel && !(this as any)._isDisposed) {
-                    this._panel.webview.postMessage({ command: 'modelsList', models: [], error: e.message });
+                if (!this._isDisposed) {
+                    this._postMessage({ command: 'modelsList', models: [], error: e.message });
                 }
               }
             }
@@ -837,7 +883,7 @@ export class SettingsPanel {
                 return;
             case 'requestLog':
                 const logContent = Logger.getLogContent();
-                this._panel.webview.postMessage({ command: 'logData', content: logContent });
+                this._postMessage({ command: 'logData', content: logContent });
                 return;
 
             case 'requestProfileName':
@@ -846,13 +892,13 @@ export class SettingsPanel {
                     placeHolder: "e.g., Home Office, Production API"
                 });
                 if (name) {
-                    this._panel.webview.postMessage({ command: 'profileNameProvided', name });
+                    this._postMessage({ command: 'profileNameProvided', name });
                 }
                 return;
           }
         },
         undefined,
-        []
+        this._disposables
       );
   }
 

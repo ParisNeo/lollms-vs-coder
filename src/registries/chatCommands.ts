@@ -421,25 +421,39 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         }
 
         const provider = services.contextManager.getContextStateProvider();
-        const includedFiles = provider ? provider.getIncludedFiles().map(f => f.path) : [];
+        const providerFiles = provider ? provider.getIncludedFiles() : [];
+        const sourceDiscFiles: any[] = Array.isArray((sourceDiscussion as any).includedFiles)
+            ? (sourceDiscussion as any).includedFiles
+            : [];
+        const mergedIncluded: any[] = JSON.parse(JSON.stringify(sourceDiscFiles));
+        for (const pf of providerFiles) {
+            const pPath = (typeof pf === 'string' ? pf : pf.path || '').replace(/\\/g, '/').toLowerCase();
+            if (!pPath) continue;
+            const exists = mergedIncluded.some((df: any) => {
+                const dPath = (typeof df === 'string' ? df : df.path || '').replace(/\\/g, '/').toLowerCase();
+                return dPath === pPath;
+            });
+            if (!exists) {
+                mergedIncluded.push(JSON.parse(JSON.stringify(pf)));
+            }
+        }
+        const includedFiles = mergedIncluded.map((f: any) => typeof f === 'string' ? f : f.path).filter(Boolean);
         const mutedFiles = [...(sourceDiscussion.mutedFiles || [])];
         const allTargetFiles = Array.from(new Set([...includedFiles, ...mutedFiles]));
 
         const newDiscussion = services.discussionManager.createNewDiscussion(sourceDiscussion.groupId || null);
         newDiscussion.title = `Fork of ${sourceDiscussion.title || 'Discussion'}`;
         newDiscussion.mutedFiles = mutedFiles;
-        newDiscussion.mutedTools = [...(sourceDiscussion.mutedTools || [])];
-        newDiscussion.mutedSkills = [...(sourceDiscussion.mutedSkills || [])];
-        newDiscussion.mutedDiagrams = [...(sourceDiscussion.mutedDiagrams || [])];
-        newDiscussion.importedSkills = [...(sourceDiscussion.importedSkills || [])];
-        newDiscussion.importedTools = [...(sourceDiscussion.importedTools || [])];
-        newDiscussion.activeDiagrams = [...(sourceDiscussion.activeDiagrams || [])];
-        newDiscussion.discussion_data_zone = sourceDiscussion.discussion_data_zone;
+        (newDiscussion as any).includedFiles = JSON.parse(JSON.stringify(mergedIncluded));
         newDiscussion.model = sourceDiscussion.model;
         newDiscussion.personalityId = sourceDiscussion.personalityId;
 
         if (sourceDiscussion.capabilities) {
             newDiscussion.capabilities = JSON.parse(JSON.stringify(sourceDiscussion.capabilities));
+        }
+        if (newDiscussion.capabilities) {
+            newDiscussion.capabilities.mutedFiles = [...mutedFiles];
+            (newDiscussion.capabilities as any).includedFiles = JSON.parse(JSON.stringify(mergedIncluded));
         }
 
         await services.discussionManager.saveDiscussion(newDiscussion);
@@ -522,7 +536,23 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
             progress.report({ message: "Synthesizing session recap..." });
 
             const provider = services.contextManager.getContextStateProvider();
-            const includedFiles = provider ? provider.getIncludedFiles().map(f => f.path) : [];
+            const providerFiles = provider ? provider.getIncludedFiles() : [];
+            const sourceDiscFiles: any[] = Array.isArray((sourceDiscussion as any).includedFiles)
+                ? (sourceDiscussion as any).includedFiles
+                : [];
+            const mergedIncluded: any[] = JSON.parse(JSON.stringify(sourceDiscFiles));
+            for (const pf of providerFiles) {
+                const pPath = (typeof pf === 'string' ? pf : pf.path || '').replace(/\\/g, '/').toLowerCase();
+                if (!pPath) continue;
+                const exists = mergedIncluded.some((df: any) => {
+                    const dPath = (typeof df === 'string' ? df : df.path || '').replace(/\\/g, '/').toLowerCase();
+                    return dPath === pPath;
+                });
+                if (!exists) {
+                    mergedIncluded.push(JSON.parse(JSON.stringify(pf)));
+                }
+            }
+            const includedFiles = mergedIncluded.map((f: any) => typeof f === 'string' ? f : f.path).filter(Boolean);
             const mutedFiles = [...(sourceDiscussion.mutedFiles || [])];
             const allTargetFiles = Array.from(new Set([...includedFiles, ...mutedFiles]));
 
@@ -585,6 +615,7 @@ ${transcript}`;
             const newDiscussion = services.discussionManager.createNewDiscussion(sourceDiscussion.groupId || null);
             newDiscussion.title = `Compressed Fork of ${sourceDiscussion.title || 'Discussion'}`;
             newDiscussion.mutedFiles = mutedFiles;
+            (newDiscussion as any).includedFiles = JSON.parse(JSON.stringify(mergedIncluded));
             newDiscussion.mutedTools = [...(sourceDiscussion.mutedTools || [])];
             newDiscussion.mutedSkills = [...(sourceDiscussion.mutedSkills || [])];
             newDiscussion.mutedDiagrams = [...(sourceDiscussion.mutedDiagrams || [])];
@@ -597,6 +628,10 @@ ${transcript}`;
 
             if (sourceDiscussion.capabilities) {
                 newDiscussion.capabilities = JSON.parse(JSON.stringify(sourceDiscussion.capabilities));
+            }
+            if (newDiscussion.capabilities) {
+                newDiscussion.capabilities.mutedFiles = [...mutedFiles];
+                (newDiscussion.capabilities as any).includedFiles = JSON.parse(JSON.stringify(mergedIncluded));
             }
 
             // Create the two alternating messages to preserve user/assistant alternation:

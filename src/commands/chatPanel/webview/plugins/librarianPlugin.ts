@@ -82,7 +82,7 @@ function renderPlanHtml(inner: string, context: PluginContext): string {
     <details open class="processing-block librarian-plan-card" id="${blockId}" style="margin: 10px 0; border: 1.5px solid var(--vscode-charts-orange); border-radius: 8px; background: rgba(0,0,0,0.12); box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
         <summary style="padding: 8px 12px; cursor: pointer; font-weight: bold; font-size: 12px; color: var(--vscode-charts-orange); display: flex; align-items: center; justify-content: space-between; background: var(--vscode-sideBarSectionHeader-background);">
             <span style="display: flex; align-items: center; gap: 6px;">
-                <i class="codicon codicon-checklist"></i> <span>Librarian Architecture &amp; Execution Plan (${totalPhasesLabel})</span>
+                <i class="codicon codicon-checklist"></i> <span>Architecture &amp; Execution Plan (${totalPhasesLabel})</span>
             </span>
             <span class="mode-badge active" style="font-size: 9px; padding: 1px 6px;">Plan Active</span>
         </summary>

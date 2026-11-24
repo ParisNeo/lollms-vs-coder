@@ -1023,7 +1023,8 @@ export const fileMutationPlugin: TagPlugin = {
 
 export const fileOpPlugin: TagPlugin = {
     id: 'file_operations',
-    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(move_files|copy_files|delete_files|remove_files_from_context|mute_files|unmute_files)\b([^>]*?)>([\s\S]*?)<\/\1>/gim,
+    tagPattern: /<(move_files|copy_files|delete_files|remove_files_from_context|mute_files|unmute_files)\b([^>]*?)>([\s\S]*?)<\/\1>/gim,
+
     render: (match) => {
         const type = match[1];
         const attrPart = match[2] || "";
@@ -1399,7 +1400,7 @@ export const fileOpPlugin: TagPlugin = {
 
 export const unpackDirectoryPlugin: TagPlugin = {
     id: 'unpack_directory',
-    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<unpack_directory\b([^>]*?)>([\s\S]*?)<\/unpack_directory>/gim,
+    tagPattern: /<unpack_directory\b([^>]*?)>([\s\S]*?)<\/unpack_directory>/gim,
     render: (match) => {
         const inner = (match[2] || "").trim();
         const dirs = inner.split(/[\s\r\n,]+/).map(d => d.trim().replace(/^['"]|['"]$/g, '')).filter(d => d && !d.startsWith('<'));
@@ -1459,7 +1460,7 @@ export function extractStructurePaths(attrStr: string, inner: string): string[] 
 
 export const loadStructurePlugin: TagPlugin = {
     id: 'load_structure',
-    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:load_structure|read_definitions)\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/(?:load_structure|read_definitions)>)?)/gim,
+    tagPattern: /<(?:load_structure|read_definitions)\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/(?:load_structure|read_definitions)>)?)/gim,
     render: (match, context) => {
         const attrStr = match[1] || "";
         const inner = (match[2] || "").trim();
@@ -1705,7 +1706,7 @@ export function extractSymbolRequests(attrStr: string, inner: string): { filePat
 
 export const showSymbolPlugin: TagPlugin = {
     id: 'show_symbol',
-    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:show_symbol|read_symbol|get_symbol_code)\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/(?:show_symbol|read_symbol|get_symbol_code)>)?)/gim,
+    tagPattern: /<(?:show_symbol|read_symbol|get_symbol_code)\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/(?:show_symbol|read_symbol|get_symbol_code)>)?)/gim,
     render: (match, context) => {
         const attrStr = match[1] || "";
         const inner = (match[2] || "").trim();
@@ -1872,7 +1873,7 @@ export function extractPeekPaths(attrStr: string, inner: string): string[] {
 
 export const peekFilesPlugin: TagPlugin = {
     id: 'peek_files',
-    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<peek_files\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/peek_files>)?)/gim,
+    tagPattern: /<peek_files\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/peek_files>)?)/gim,
     render: (match, context) => {
         const attrStr = match[1] || "";
         const inner = (match[2] || "").trim();
@@ -2056,7 +2057,7 @@ export function extractRunTestsTargets(attrStr: string, inner: string): string[]
 
 export const runTestsPlugin: TagPlugin = {
     id: 'run_tests',
-    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<run_tests\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/run_tests>)?)/gim,
+    tagPattern: /<run_tests\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/run_tests>)?)/gim,
     render: (match, context) => {
         const attrStr = match[1] || "";
         const inner = (match[2] || "").trim();
@@ -2133,7 +2134,7 @@ export const runTestsPlugin: TagPlugin = {
 
 export const executeCodePlugin: TagPlugin = {
     id: 'execute_code',
-    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<execute_code\b([^>]*?)>([\s\S]*?)<\/execute_code>/gim,
+    tagPattern: /<execute_code\b([^>]*?)>([\s\S]*?)<\/execute_code>/gim,
     render: (match) => {
         const attrStr = match[1] || '';
         const codeBody = (match[2] || '').trim();
@@ -2188,7 +2189,7 @@ export const executeCodePlugin: TagPlugin = {
 
 export const readExternalFilePlugin: TagPlugin = {
     id: 'read_external_file',
-    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<read_external_file\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/read_external_file>)?)/gim,
+    tagPattern: /<read_external_file\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/read_external_file>)?)/gim,
     render: (match) => {
         const attrStr = match[1] || "";
         const rawInner = (match[2] || "").trim();

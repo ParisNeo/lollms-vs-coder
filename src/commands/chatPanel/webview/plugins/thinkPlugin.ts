@@ -1,5 +1,6 @@
 import { TagPlugin, PluginContext } from '../pluginSystem.js';
 import { extractFileBlocks } from './fileOpPlugin.js';
+import { findBalancedProcessingBlockRanges } from './processingPlugin.js';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 
@@ -82,13 +83,80 @@ export const thinkPlugin: TagPlugin = {
         const blocks: { html: string; start: number; end: number }[] = [];
         if (!text || typeof text !== 'string') return blocks;
 
+        const fileRanges = extractFileBlocks(text).map(b => ({ start: b.start, end: b.end }));
         const protectedRanges: { start: number; end: number }[] = [
-            ...extractFileBlocks(text).map(b => ({ start: b.start, end: b.end }))
+            ...fileRanges,
+            ...findBalancedProcessingBlockRanges(text, fileRanges)
         ];
-        const fenceOrInlineRe = /```[\s\S]*?(?:```|$)|`[^`\r\n]+`/g;
-        let fm: RegExpExecArray | null;
-        while ((fm = fenceOrInlineRe.exec(text)) !== null) {
-            protectedRanges.push({ start: fm.index, end: fm.index + fm[0].length });
+
+        // Protect fenced code blocks (variable-length backtick/tilde) and inline backticks outside <file>/processing-block
+        let openFence: { start: number; char: string; len: number } | null = null;
+        let lineStart = 0;
+        const len = text.length;
+        while (lineStart < len) {
+            const nlIdx = text.indexOf('\n', lineStart);
+            const nextLineStart = nlIdx === -1 ? len : nlIdx + 1;
+            const lineEnd = (nlIdx === -1 ? len : nlIdx) - (nlIdx > lineStart && text[nlIdx - 1] === '\r' ? 1 : 0);
+            const lineText = text.slice(lineStart, lineEnd);
+
+            if (!openFence && protectedRanges.some(r => lineStart >= r.start && lineStart < r.end)) {
+                lineStart = nextLineStart;
+                continue;
+            }
+
+            const fm = lineText.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+            if (openFence) {
+                if (fm && fm[1][0] === openFence.char && fm[1].length >= openFence.len && (fm[2] || '').trim() === '') {
+                    protectedRanges.push({ start: openFence.start, end: nextLineStart });
+                    openFence = null;
+                }
+                lineStart = nextLineStart;
+                continue;
+            }
+
+            if (fm) {
+                const marker = fm[1];
+                const ch = marker[0];
+                const trailing = (fm[2] || '').trim();
+                const isInline = ch === '`' && trailing.includes(marker);
+                if (!isInline) {
+                    openFence = { start: lineStart, char: ch, len: marker.length };
+                    lineStart = nextLineStart;
+                    continue;
+                }
+            }
+
+            let col = 0;
+            while (col < lineText.length) {
+                if (lineText[col] === '`') {
+                    let t = 0;
+                    while (col + t < lineText.length && lineText[col + t] === '`') t++;
+                    let i = col + t;
+                    let endCol = -1;
+                    while (i < lineText.length) {
+                        if (lineText[i] === '`') {
+                            let c = 0;
+                            while (i + c < lineText.length && lineText[i + c] === '`') c++;
+                            if (c === t) { endCol = i + c; break; }
+                            i += c;
+                        } else {
+                            i++;
+                        }
+                    }
+                    if (endCol !== -1) {
+                        protectedRanges.push({ start: lineStart + col, end: lineStart + endCol });
+                        col = endCol;
+                        continue;
+                    }
+                    col += t;
+                    continue;
+                }
+                col++;
+            }
+            lineStart = nextLineStart;
+        }
+        if (openFence) {
+            protectedRanges.push({ start: openFence.start, end: len });
         }
 
         const findContainingProtected = (pos: number) =>

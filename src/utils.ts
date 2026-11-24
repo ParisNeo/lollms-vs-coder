@@ -500,9 +500,52 @@ export function isValidFilePath(filePath: string, options?: { allowExtensionless
     return true;
 }
 
+/**
+ * True when the given (already trimmed) line is SOLELY a tool-call wrapper tag
+ * (Anthropic/Qwen/OpenAI XML function-calling). Examples:
+ *   <parameter name="x">    </parameter>
+ *   <tool_call>             </tool_call>
+ *   <tool_use>              </tool_use>
+ *   <invoke name="...">     </invoke>
+ *   <function_calls>        </function_calls>
+ *   <antml:parameter ...>   </antml:parameter>
+ * Must be the ENTIRE line — mixed-content lines are left untouched (safer).
+ */
+function isPureToolCallWrapperTagLine(trimmed: string): boolean {
+    if (!trimmed || trimmed.length < 3) return false;
+    if (trimmed[0] !== '<' || trimmed[trimmed.length - 1] !== '>') return false;
+    return /^<\/?(?:parameter|invoke|tool_call|tool_use|function_call|function_calls|tool|antml:parameter|antml:invoke|antml:function_calls|antml:tool_call|antml:tool_use)(?:\s[^<>]*)?\/?>$/i.test(trimmed);
+}
+
+/**
+ * Strips leaked tool-call wrapper artifacts from text that is about to be
+ * written to a file (SEARCH/REPLACE replace-blocks, or <file action="write">
+ * bodies). Handles two narrow shapes only, preserving all real code:
+ *   1. Pure wrapper-tag lines (e.g. `<parameter name="x">` / `</parameter>`)
+ *   2. Single-line `<parameter ...>X</parameter>` wrappers   →   unwraps to `X`
+ * Any line containing other content is preserved verbatim.
+ */
+export function stripToolCallWrapperArtifacts(text: string): string {
+    if (!text) return '';
+    const out: string[] = [];
+    for (const line of text.split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed && isPureToolCallWrapperTagLine(trimmed)) {
+            continue;
+        }
+        const inlineParam = line.match(/^([ \t]*)<parameter\b[^>]*>([\s\S]*?)<\/parameter>[ \t]*$/i);
+        if (inlineParam) {
+            out.push(inlineParam[1] + inlineParam[2]);
+            continue;
+        }
+        out.push(line);
+    }
+    return out.join('\n');
+}
+
 export function sanitizeAiderMarkers(text: string): string {
     if (!text) return '';
-    return text
+    const markerStripped = text
         .split('\n')
         .filter(line => {
             const trimmed = line.trim();
@@ -517,6 +560,8 @@ export function sanitizeAiderMarkers(text: string): string {
             return true;
         })
         .join('\n');
+    // Defensive strip of leaked tool-call wrapper tags (Anthropic/Qwen artifact)
+    return stripToolCallWrapperArtifacts(markerStripped);
 }
 
 
@@ -583,10 +628,11 @@ export function applySearchReplace(content: string, searchBlock: string, replace
     let normalizedSearch = cleanUnicode(sanitizeAiderMarkers((searchBlock || "").replace(/\r\n/g, '\n')));
     let normalizedReplace = cleanUnicode(sanitizeAiderMarkers((replaceBlock || "").replace(/\r\n/g, '\n')));
 
-    // Strip any residual marker lines from replaceBlock to prevent leaks
+    // Strip any residual marker lines AND leaked tool-call wrapper artifacts from replaceBlock
     normalizedReplace = normalizedReplace
         .split('\n')
         .filter(l => !/^<{5,}\s*search\b|^={5,}(?:\s*.*)?$|^>{5,}\s*replace\b/i.test(l.trim()))
+        .filter(l => !isPureToolCallWrapperTagLine(l.trim()))
         .join('\n');
 
     // 1. Reject Empty Search on Existing Non-Empty Files

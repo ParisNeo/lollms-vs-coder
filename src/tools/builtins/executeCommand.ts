@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
 import { Logger } from '../../logger';
 import { AgentSecurityGuard } from '../../security/agentSecurityGuard';
+import { ContextPoisoningGate } from '../../security/contextPoisoningGate';
 
 export const executeCommandTool: ToolDefinition = {
     name: "execute_command",
@@ -34,14 +35,50 @@ export const executeCommandTool: ToolDefinition = {
         const timeoutMs = params.timeout_s ? params.timeout_s * 1000 : 900000; // 15 minute default
 
         // --- 🛡️ DETERMINISTIC + LLM SECURITY AUDIT ---
+        const workspaceRoots = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
+        if (env.workspaceRoot && !workspaceRoots.includes(env.workspaceRoot.uri.fsPath)) {
+            workspaceRoots.unshift(env.workspaceRoot.uri.fsPath);
+        }
         const secLevel = env.agentManager?.getSecurityLevel?.() || 'guarded';
-        const staticRes = AgentSecurityGuard.analyzeShellCommand(params.command, secLevel);
+        const staticRes = AgentSecurityGuard.analyzeShellCommand(params.command, secLevel, workspaceRoots);
         if (staticRes.decision === 'block') {
             Logger.error(`[SECURITY HARD-BLOCK] Command: ${params.command}. Reason: ${staticRes.reason}`);
             return {
                 success: false,
                 output: `🛑 SECURITY VIOLATION: Execution blocked deterministically.\nReason: ${staticRes.reason}`
             };
+        }
+
+        // If invoking a script file in the workspace, validate & scan its content too
+        const scriptMatch = params.command.match(/\b(?:python3?|node|bash|sh|pwsh|powershell)\s+([^\r\n;&|]+\.(?:py|js|mjs|cjs|ts|sh|ps1))\b/i);
+        if (scriptMatch) {
+            const scriptTarget = scriptMatch[1].trim().replace(/^['"]|['"]$/g, '');
+            const pathCheck = AgentSecurityGuard.validateWorkspacePath(scriptTarget, env.workspaceRoot);
+            if (!pathCheck.valid) {
+                return { success: false, output: `🛑 SECURITY VIOLATION: ${pathCheck.reason}` };
+            }
+            const resolved = await env.contextManager?.resolveWorkspaceFromPath?.(scriptTarget);
+            if (resolved) {
+                try {
+                    const bytes = await vscode.workspace.fs.readFile(resolved.uri);
+                    const scriptScan = AgentSecurityGuard.analyzeScriptContent(Buffer.from(bytes).toString('utf8'), resolved.relativePath, secLevel, workspaceRoots);
+                    if (scriptScan.decision === 'block') {
+                        return { success: false, output: `🛑 SECURITY VIOLATION: ${scriptScan.reason}` };
+                    }
+                    if (scriptScan.decision === 'confirm') {
+                        const approval = await env.agentManager.requestSecurityApproval(
+                            `Confirm Script Execution: ${resolved.relativePath}`,
+                            `${scriptScan.reason}`,
+                            'execute_command',
+                            resolved.relativePath,
+                            signal
+                        );
+                        if (approval === 'block') {
+                            return { success: false, output: `🛑 SECURITY BLOCK: Script execution rejected by user.` };
+                        }
+                    }
+                } catch {}
+            }
         }
 
         const audit = await (env.agentManager as any).performSecurityAudit(params.command, signal);
@@ -59,13 +96,15 @@ export const executeCommandTool: ToolDefinition = {
             return { success: true, output: "Window reload triggered." };
         }
 
+        const result = await (env.agentManager as any).runCommand(params.command, signal, { shell: params.shell, timeoutMs });
         if (params.command.includes("git add") && !params.command.includes(".gitignore")) {
-            const warning = "\n[SYSTEM ADVICE]: You are using 'git add'. Ensure you have a proper .gitignore to avoid staging internal folders like .lollms/ or venv/.";
-            const result = await (env.agentManager as any).runCommand(params.command, signal, { shell: params.shell, timeoutMs });
-            result.output += warning;
-            return result;
+            result.output += "\n[SYSTEM ADVICE]: You are using 'git add'. Ensure you have a proper .gitignore to avoid staging internal folders like .lollms/ or venv/.";
         }
 
-        return (env.agentManager as any).runCommand(params.command, signal, { shell: params.shell, timeoutMs });
+        const gateRes = await ContextPoisoningGate.sanitizeExecutionOutput(result.output || '', 'execute_command', { signal });
+        return {
+            success: result.success && !gateRes.blocked,
+            output: gateRes.sanitizedOutput
+        };
         }
 };

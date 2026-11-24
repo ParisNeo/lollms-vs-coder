@@ -29,7 +29,7 @@ import { registerPlugin, pluginRegistry, PluginContext } from './pluginSystem.js
 import { contextExpansionPlugin } from './plugins/contextExpansionPlugin.js';
 import { projectMemoryPlugin } from './plugins/projectMemoryPlugin.js';
 import { milestonePlugin } from './plugins/milestonePlugin.js';
-import { processingPlugin } from './plugins/processingPlugin.js';
+import { processingPlugin, findBalancedProcessingBlockRanges } from './plugins/processingPlugin.js';
 import { formPlugin, parseAndRenderFormContent } from './plugins/formPlugin.js';
 import { fileOpPlugin, fileMutationPlugin, unpackDirectoryPlugin, peekFilesPlugin, loadStructurePlugin, showSymbolPlugin, runTestsPlugin, readExternalFilePlugin, executeCodePlugin } from './plugins/fileOpPlugin.js';
 import { breakpointPlugin } from './plugins/breakpointPlugin.js';
@@ -1124,6 +1124,130 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
 let _lastExtractPathsInput = '';
 let _lastExtractPathsOutput: any[] = [];
 
+function findBalancedProcessingBlockRanges(text: string, excludedRanges: { start: number; end: number }[] = []): { start: number; end: number }[] {
+    const ranges: { start: number; end: number }[] = [];
+    if (!text) return ranges;
+    const openRegex = /<details\b[^>]*\bclass=["'][^"']*\bprocessing-block\b[^"']*["'][^>]*>/gi;
+    let m: RegExpExecArray | null;
+    while ((m = openRegex.exec(text)) !== null) {
+        const start = m.index;
+        if (excludedRanges.some(r => start >= r.start && start < r.end)) continue;
+        const tagFinder = /<\/?details\b[^>]*>/gi;
+        tagFinder.lastIndex = start + m[0].length;
+        let depth = 1;
+        let end = text.length;
+        let tm: RegExpExecArray | null;
+        while ((tm = tagFinder.exec(text)) !== null) {
+            if (tm[0].toLowerCase().startsWith('</')) {
+                depth--;
+                if (depth === 0) {
+                    end = tm.index + tm[0].length;
+                    break;
+                }
+            } else {
+                depth++;
+            }
+        }
+        ranges.push({ start, end });
+        openRegex.lastIndex = end;
+    }
+    return ranges;
+}
+
+function findProtectedCodeRangesInText(
+    text: string,
+    excludedRanges: { start: number; end: number }[],
+    toolFenceTagRe?: RegExp
+): { start: number; end: number }[] {
+    const ranges: { start: number; end: number }[] = [];
+    if (!text) return ranges;
+
+    const isExcluded = (offset: number) => excludedRanges.some(r => offset >= r.start && offset < r.end);
+    const findInlineEnd = (line: string, startCol: number): number => {
+        let ticks = 0;
+        while (startCol + ticks < line.length && line[startCol + ticks] === '`') ticks++;
+        if (ticks === 0) return -1;
+        let i = startCol + ticks;
+        while (i < line.length) {
+            if (line[i] === '`') {
+                let c = 0;
+                while (i + c < line.length && line[i + c] === '`') c++;
+                if (c === ticks) return i + c;
+                i += c;
+            } else {
+                i++;
+            }
+        }
+        return -1;
+    };
+
+    let openFence: { start: number; bodyStart: number; char: string; len: number; langHint: string } | null = null;
+    let lineStart = 0;
+    const len = text.length;
+    while (lineStart < len) {
+        const nlIdx = text.indexOf('\n', lineStart);
+        const nextLineStart = nlIdx === -1 ? len : nlIdx + 1;
+        const lineEnd = (nlIdx === -1 ? len : nlIdx) - (nlIdx > lineStart && text[nlIdx - 1] === '\r' ? 1 : 0);
+        const lineText = text.slice(lineStart, lineEnd);
+
+        if (!openFence && isExcluded(lineStart)) {
+            lineStart = nextLineStart;
+            continue;
+        }
+
+        const fm = lineText.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+        if (openFence) {
+            if (fm && fm[1][0] === openFence.char && fm[1].length >= openFence.len && (fm[2] || '').trim() === '') {
+                const innerTrim = text.slice(openFence.bodyStart, lineStart).trim();
+                const isToolWrapper = !!(toolFenceTagRe &&
+                    (!openFence.langHint || ['xml', 'tool', 'tools', 'sparql'].includes(openFence.langHint)) &&
+                    innerTrim.startsWith('<') &&
+                    toolFenceTagRe.test(innerTrim.substring(1)));
+                if (!isToolWrapper) {
+                    ranges.push({ start: openFence.start, end: nextLineStart });
+                }
+                openFence = null;
+            }
+            lineStart = nextLineStart;
+            continue;
+        }
+
+        if (fm) {
+            const marker = fm[1];
+            const ch = marker[0];
+            const mLen = marker.length;
+            const trailing = (fm[2] || '').trim();
+            const isInline = ch === '`' && trailing.includes(marker);
+            if (!isInline) {
+                openFence = { start: lineStart, bodyStart: nextLineStart, char: ch, len: mLen, langHint: trailing.toLowerCase() };
+                lineStart = nextLineStart;
+                continue;
+            }
+        }
+
+        let col = 0;
+        while (col < lineText.length) {
+            if (lineText[col] === '`') {
+                const endCol = findInlineEnd(lineText, col);
+                if (endCol !== -1) {
+                    if (!isExcluded(lineStart + col)) {
+                        ranges.push({ start: lineStart + col, end: lineStart + endCol });
+                    }
+                    col = endCol;
+                    continue;
+                }
+            }
+            col++;
+        }
+        lineStart = nextLineStart;
+    }
+
+    if (openFence) {
+        ranges.push({ start: openFence.start, end: len });
+    }
+    return ranges;
+}
+
 function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null, path: string, stripFirstLine: boolean, isClosed: boolean, start: number, end: number, fenceLength?: number })[] {
     if (content === _lastExtractPathsInput) return _lastExtractPathsOutput;
     const fileBlocks = extractFileBlocks(content);
@@ -1136,12 +1260,7 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
         thinkRanges.push({ start: tm.index, end: tm.index + tm[0].length });
     }
 
-    const processingBlockRanges: { start: number, end: number }[] = [];
-    const procRegex = /<details\b[^>]*class=["'][^"']*processing-block[^"']*["'][^>]*>[\s\S]*?(?:<\/details>|$)/gi;
-    let pm: RegExpExecArray | null;
-    while ((pm = procRegex.exec(content)) !== null) {
-        processingBlockRanges.push({ start: pm.index, end: pm.index + pm[0].length });
-    }
+    const processingBlockRanges = findBalancedProcessingBlockRanges(content, fileRanges);
 
     const execCodeRanges: { start: number, end: number }[] = [];
     const execRegex = /<(execute_code|lollms_tool)\b[^>]*>[\s\S]*?(?:<\/\1>|$)/gi;
@@ -2655,47 +2774,28 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     const ctx: PluginContext = { messageId, isFinal, capabilities: state.capabilities, vscode };
     let mutationTagIndex = 0;
 
-    // Precompute protected ranges so markdown fences, inline code, <think>, and processing-blocks do not corrupt each other
-    const protectedCodeRanges: { start: number; end: number }[] = [];
-    const fenceProtectRegex = /```([a-zA-Z0-9_\-]*)[ \t]*\r?\n([\s\S]*?)(?:```|$)|`[^`\r\n]+`/g;
+    // Precompute protected ranges in dependency order so <file>, processing-blocks, code fences, inline code, and <think> do not corrupt each other
+    const protectedFileRanges = extractFileBlocks(mainProcessedContent).map(b => ({ start: b.start, end: b.end }));
+    const protectedProcessingRanges = findBalancedProcessingBlockRanges(mainProcessedContent, protectedFileRanges);
     const toolFenceTagRe = /^(?:add_files_to_context|remove_files_from_context|mute_files|unmute_files|load_knowledge|update_knowledge|unpack_directory|load_structure|read_definitions|show_symbol|get_symbol_code|read_symbol|peek_files|read_full_file|read_file|read_external_file|grep|grep_search|search_files|manage_symbols|query_architecture|sparql|run_tests|lollms_tool|execute_code|lollms_form)\b/i;
-    let fpMatch: RegExpExecArray | null;
-    while ((fpMatch = fenceProtectRegex.exec(mainProcessedContent)) !== null) {
-        if (fpMatch[0].startsWith('```')) {
-            const langHint = (fpMatch[1] || '').toLowerCase();
-            const innerTrim = (fpMatch[2] || '').trim();
-            const isToolWrapper = (!langHint || ['xml', 'tool', 'tools', 'sparql'].includes(langHint)) &&
-                innerTrim.startsWith('<') &&
-                toolFenceTagRe.test(innerTrim.substring(1));
-            if (isToolWrapper) continue;
-        }
-        protectedCodeRanges.push({ start: fpMatch.index, end: fpMatch.index + fpMatch[0].length });
-    }
+    const protectedCodeRanges = findProtectedCodeRangesInText(
+        mainProcessedContent,
+        [...protectedFileRanges, ...protectedProcessingRanges],
+        toolFenceTagRe
+    );
 
     const protectedThinkRanges: { start: number; end: number }[] = [];
-    const thinkBlockRe = /<(think|thinking|thought|analysis|reasoning)\b[^>]*>[\s\S]*?(?:<\/\1>|$)/gi;
+    const thinkBlockRe = /<(think|thinking|thought|analysis|reasoning)\b[^>]*>[\s\S]*?(?:<\/(?:think|thinking|thought|analysis|reasoning)\s*>|$)/gi;
     let tbMatch: RegExpExecArray | null;
     while ((tbMatch = thinkBlockRe.exec(mainProcessedContent)) !== null) {
-        const isInsideCode = protectedCodeRanges.some(r => tbMatch!.index >= r.start && tbMatch!.index < r.end);
-        if (!isInsideCode) {
-            protectedThinkRanges.push({ start: tbMatch.index, end: tbMatch.index + tbMatch[0].length });
+        const idx = tbMatch.index;
+        const inFileOrProc = protectedFileRanges.some(r => idx >= r.start && idx < r.end) ||
+            protectedProcessingRanges.some(r => idx >= r.start && idx < r.end);
+        const isInsideCode = protectedCodeRanges.some(r => idx >= r.start && idx < r.end);
+        if (!inFileOrProc && !isInsideCode) {
+            protectedThinkRanges.push({ start: idx, end: idx + tbMatch[0].length });
         }
     }
-
-    const protectedProcessingRanges: { start: number; end: number }[] = [];
-    const procBlockRe = /<details\b[^>]*class=["'][^"']*processing-block[^"']*["'][^>]*>[\s\S]*?(?:<\/details>|$)/gi;
-    let pbMatch: RegExpExecArray | null;
-    while ((pbMatch = procBlockRe.exec(mainProcessedContent)) !== null) {
-        const isInsideCode = protectedCodeRanges.some(r => pbMatch!.index >= r.start && pbMatch!.index < r.end);
-        if (!isInsideCode) {
-            protectedProcessingRanges.push({ start: pbMatch.index, end: pbMatch.index + pbMatch[0].length });
-        }
-    }
-
-    const relaxedAutoExecPlugins = new Set([
-        'execute_code', 'lollms_tool', 'run_tests', 'load_structure', 'show_symbol',
-        'read_external_file', 'file_operations', 'context_expansion', 'sparql', 'processing_block'
-    ]);
 
     ensurePluginsInitialized();
 
@@ -2705,9 +2805,11 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const extracted = plugin.extractBlocks(mainProcessedContent, ctx);
             extracted.forEach(b => {
                 const isThinkPlugin = plugin.id === 'think' || plugin.id === 'think_tag';
+                const isProcessingPlugin = plugin.id === 'processing_block' || plugin.id === 'processing_blocks';
                 const inThink = !isThinkPlugin && protectedThinkRanges.some(r => b.start >= r.start && b.start < r.end);
-                const inProc = plugin.id !== 'processing_block' && protectedProcessingRanges.some(r => b.start >= r.start && b.start < r.end);
-                if (inThink || inProc) return;
+                const inProc = !isProcessingPlugin && protectedProcessingRanges.some(r => b.start >= r.start && b.start < r.end);
+                const inFile = plugin.id !== 'file_mutation' && protectedFileRanges.some(r => b.start >= r.start && b.start < r.end);
+                if (inThink || inProc || inFile) return;
 
                 // Bidirectional interval overlap check
                 const isOverlapping = segments.some(s => b.start < s.end && b.end > s.start);
@@ -2738,16 +2840,12 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const inThink = !isThinkPlugin && protectedThinkRanges.some(r => matchIndex >= r.start && matchIndex < r.end);
             if (inThink) continue;
 
-            const inProc = plugin.id !== 'processing_block' && protectedProcessingRanges.some(r => matchIndex >= r.start && matchIndex < r.end);
+            const isProcessingPlugin = plugin.id === 'processing_block' || plugin.id === 'processing_blocks';
+            const inProc = !isProcessingPlugin && protectedProcessingRanges.some(r => matchIndex >= r.start && matchIndex < r.end);
             if (inProc) continue;
 
-            // Line-start check: allow clean line start, list bullets, blockquotes, closing tags, or (for auto-exec blocks) sentence/colon prefixes
-            const textBefore = mainProcessedContent.substring(0, matchIndex);
-            const lineStartIdx = Math.max(textBefore.lastIndexOf('\n'), textBefore.lastIndexOf('\r'));
-            const prefixOnLine = lineStartIdx === -1 ? textBefore : textBefore.substring(lineStartIdx + 1);
-            const isCleanOrListPrefix = /^[ \t]*(?:(?:[-*+]|\d+\.)[ \t]+|>[ \t]*)?$/.test(prefixOnLine) || />[ \t]*$/.test(prefixOnLine);
-            const isRelaxedAutoPrefix = relaxedAutoExecPlugins.has(plugin.id) && /[:.!?][ \t]*$/.test(prefixOnLine);
-            if (!isCleanOrListPrefix && !isRelaxedAutoPrefix) continue;
+            const inFile = protectedFileRanges.some(r => matchIndex >= r.start && matchIndex < r.end);
+            if (inFile) continue;
 
             // Exclude matching if it overlaps with previously matched plugins
             const isOverlapping = segments.some(s => 

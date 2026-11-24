@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
 import { AgentSecurityGuard } from '../../security/agentSecurityGuard';
+import { ContextPoisoningGate } from '../../security/contextPoisoningGate';
 import * as path from 'path';
 import * as os from 'os';
 
@@ -25,39 +26,55 @@ export const executePythonScriptTool: ToolDefinition = {
             if (!pathCheck.valid) {
                 return { success: false, output: `🛑 SECURITY VIOLATION: ${pathCheck.reason}` };
             }
+            const workspaceRoots = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
+            if (env.workspaceRoot && !workspaceRoots.includes(env.workspaceRoot.uri.fsPath)) {
+                workspaceRoots.unshift(env.workspaceRoot.uri.fsPath);
+            }
+            const secLevel = env.agentManager?.getSecurityLevel?.() || 'guarded';
+
             if (params.env_name) {
                 const envCheck = AgentSecurityGuard.validateWorkspacePath(params.env_name, env.workspaceRoot);
                 if (!envCheck.valid) {
                     return { success: false, output: `🛑 SECURITY VIOLATION: ${envCheck.reason}` };
                 }
             }
+            if (params.args) {
+                const argsCheck = AgentSecurityGuard.analyzeShellCommand(params.args, secLevel, workspaceRoots);
+                if (argsCheck.decision === 'block') {
+                    return { success: false, output: `🛑 SECURITY VIOLATION in args: ${argsCheck.reason}` };
+                }
+            }
 
             if (env.workspaceRoot && env.agentManager) {
+                const resolved = await env.contextManager?.resolveWorkspaceFromPath?.(params.script_path);
+                const scriptUri = resolved?.uri || (path.isAbsolute(params.script_path) ? vscode.Uri.file(params.script_path) : vscode.Uri.joinPath(env.workspaceRoot.uri, params.script_path));
+                let scriptContent = '';
                 try {
-                    const scriptUri = vscode.Uri.joinPath(env.workspaceRoot.uri, params.script_path);
                     const bytes = await vscode.workspace.fs.readFile(scriptUri);
-                    const scriptContent = Buffer.from(bytes).toString('utf8');
-                    const secLevel = env.agentManager.getSecurityLevel?.() || 'guarded';
-                    const analysis = AgentSecurityGuard.analyzeScriptContent(scriptContent, params.script_path, secLevel);
-                    if (analysis.decision === 'block') {
-                        return { success: false, output: `🛑 SECURITY VIOLATION: ${analysis.reason}` };
+                    scriptContent = Buffer.from(bytes).toString('utf8');
+                } catch (readErr: any) {
+                    return { success: false, output: `🛑 Error: Cannot read script '${params.script_path}' inside workspace: ${readErr?.message || readErr}` };
+                }
+
+                const analysis = AgentSecurityGuard.analyzeScriptContent(scriptContent, params.script_path, secLevel, workspaceRoots);
+                if (analysis.decision === 'block') {
+                    return { success: false, output: `🛑 SECURITY VIOLATION: ${analysis.reason}` };
+                }
+                if (analysis.decision === 'confirm') {
+                    const detail = analysis.matchedLines.length > 0
+                        ? `${analysis.reason}\n\nFlagged lines:\n${analysis.matchedLines.slice(0, 8).join('\n')}`
+                        : analysis.reason;
+                    const decision = await env.agentManager.requestSecurityApproval(
+                        `Authorize Python Script Execution: ${params.script_path}`,
+                        detail,
+                        'execute_python_script',
+                        params.script_path,
+                        signal
+                    );
+                    if (decision === 'block') {
+                        return { success: false, output: `🛑 Execution of '${params.script_path}' was denied by the user.` };
                     }
-                    if (analysis.decision === 'confirm') {
-                        const detail = analysis.matchedLines.length > 0
-                            ? `${analysis.reason}\n\nFlagged lines:\n${analysis.matchedLines.slice(0, 8).join('\n')}`
-                            : analysis.reason;
-                        const decision = await env.agentManager.requestSecurityApproval(
-                            `Authorize Python Script Execution: ${params.script_path}`,
-                            detail,
-                            'execute_python_script',
-                            params.script_path,
-                            signal
-                        );
-                        if (decision === 'block') {
-                            return { success: false, output: `🛑 Execution of '${params.script_path}' was denied by the user.` };
-                        }
-                    }
-                } catch {}
+                }
             }
 
             let actualEnvName = params.env_name || "";
@@ -94,6 +111,11 @@ export const executePythonScriptTool: ToolDefinition = {
         const argsStr = params.args ? ` ${params.args}` : '';
         const timeoutMs = params.timeout_s ? params.timeout_s * 1000 : 900000; // 15 minute default
 
-        return env.agentManager!.runCommand(`"${pythonScriptExec}" "${params.script_path}"${argsStr}`, signal, { timeoutMs });
+        const runRes = await env.agentManager!.runCommand(`"${pythonScriptExec}" "${params.script_path}"${argsStr}`, signal, { timeoutMs });
+        const gateRes = await ContextPoisoningGate.sanitizeExecutionOutput(runRes.output || '', `execute_python_script://${params.script_path}`, { signal });
+        return {
+            success: runRes.success && !gateRes.blocked,
+            output: gateRes.sanitizedOutput
+        };
     }
 };

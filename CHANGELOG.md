@@ -4,6 +4,10 @@ Of course! Here is the updated changelog for version **0.3.7**, incorporating th
 
 All notable changes to the "Lollms VS Coder" extension will be documented in this file.
 
+## [2026-11-24 00:52]
+
+- fix: update package-lock.json to reflect 1.1.5 version, upgrade ChatPanel implementation with pending rerun logic, enhance webview message handling for smoother file operations, and improve plugins (fileOp, processing, think) alongside security updates
+
 ## [2026-11-23 03:17]
 
 - Fix minor version in package.json to 1.1.1

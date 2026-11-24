@@ -16,6 +16,136 @@ function getStatusEmoji(text: string): string {
     return '✍️';
 }
 
+// ─── HUD ACTIVITY PULSE (generating=red, internal=green) ───
+let hudPulseStylesInjected = false;
+function ensureHudPulseStyles(): void {
+    if (hudPulseStylesInjected) return;
+    if (document.getElementById('hud-pulse-styles')) { hudPulseStylesInjected = true; return; }
+    hudPulseStylesInjected = true;
+    const style = document.createElement('style');
+    style.id = 'hud-pulse-styles';
+    style.textContent = `
+        @keyframes hudPulseRed {
+            0%, 100% { box-shadow: 0 0 0 1px rgba(229,20,0,0.28); border-color: rgba(229,20,0,0.38); }
+            50% { box-shadow: 0 0 4px 0 rgba(229,20,0,0.55); border-color: rgba(229,20,0,0.72); }
+        }
+        @keyframes hudPulseGreen {
+            0%, 100% { box-shadow: 0 0 0 1px rgba(46,204,113,0.28); border-color: rgba(46,204,113,0.38); }
+            50% { box-shadow: 0 0 4px 0 rgba(46,204,113,0.55); border-color: rgba(46,204,113,0.72); }
+        }
+        #context-container.hud-activity-generating { animation: hudPulseRed 1.6s ease-in-out infinite !important; }
+        #context-container.hud-activity-internal { animation: hudPulseGreen 1.6s ease-in-out infinite !important; }
+        @media (prefers-reduced-motion: reduce) {
+            #context-container.hud-activity-generating,
+            #context-container.hud-activity-internal { animation: none !important; }
+        }
+    `;
+    document.head.appendChild(style);
+}
+
+export type HudActivityMode = 'idle' | 'generating' | 'internal';
+
+function classifyHudActivity(statusText?: string): HudActivityMode {
+    if (!statusText) return 'generating';
+    const lower = statusText.toLowerCase();
+    const internalKeywords = [
+        'execut', 'run ', 'running', 'grep', 'search', 'scout', 'tool',
+        'command', 'script', 'index', 'read', 'applying', 'apply ', 'scan',
+        'analy', 'extract', 'research', 'librarian', 'fetch', 'sparql',
+        'structure', 'symbol', 'context', 'skill', 'batch', 'repair', 'test',
+        'debug', 'verif'
+    ];
+    return internalKeywords.some(k => lower.includes(k)) ? 'internal' : 'generating';
+}
+
+let hudStatusObserverInstalled = false;
+let hudStatusObserver: MutationObserver | null = null;
+let hudStatusObserverTarget: HTMLElement | null = null;
+
+function installHudStatusObserver(): void {
+    const el = document.getElementById('generating-status-text');
+    if (!el) return;
+
+    // If the status text element was replaced by a re-render, drop the stale
+    // observer and re-attach to the new node.
+    if (hudStatusObserverInstalled && hudStatusObserverTarget === el) return;
+    if (hudStatusObserver) {
+        try { hudStatusObserver.disconnect(); } catch {}
+        hudStatusObserver = null;
+    }
+
+    hudStatusObserverInstalled = true;
+    hudStatusObserverTarget = el;
+
+    const observer = new MutationObserver(() => {
+        if (!state.isGenerating) {
+            if (hudActivityMode !== 'idle') setHudActivityState('idle');
+            return;
+        }
+        // Bidirectional: any status change re-classifies. Text that no longer
+        // looks like internal work (streaming tokens, "thinking", etc.) flips
+        // the pulse back to red, so it always tracks the *live* activity.
+        const statusText = el.textContent || '';
+        const nextMode = classifyHudActivity(statusText);
+        if (hudActivityMode !== nextMode) {
+            setHudActivityState(nextMode);
+        }
+    });
+    hudStatusObserver = observer;
+    observer.observe(el, { childList: true, characterData: true, subtree: true });
+}
+
+let hudActivityMode: HudActivityMode = 'idle';
+
+export function setHudActivityState(mode: HudActivityMode): void {
+    ensureHudPulseStyles();
+    hudActivityMode = mode;
+    const hud = document.getElementById('context-container');
+    if (hud) {
+        hud.classList.remove('hud-activity-generating', 'hud-activity-internal');
+        if (mode === 'generating') hud.classList.add('hud-activity-generating');
+        else if (mode === 'internal') hud.classList.add('hud-activity-internal');
+        hud.dataset.activityMode = mode;
+    }
+    const statusEl = document.getElementById('generating-status-text');
+    if (statusEl) {
+        statusEl.style.transition = 'color 0.25s ease';
+        statusEl.style.color =
+            mode === 'generating' ? 'var(--vscode-charts-red, #e51400)' :
+            mode === 'internal' ? 'var(--vscode-charts-green, #2ecc71)' : '';
+    }
+    installHudStatusObserver();
+}
+
+/**
+ * Explicit event hook for the streaming pipeline. Call this whenever a
+ * new token/chunk is received so the pulse turns red the instant the model
+ * actually starts emitting content (not just when generation was requested).
+ */
+export function notifyStreamActivity(): void {
+    if (!state.isGenerating) return;
+    if (hudActivityMode !== 'generating') {
+        setHudActivityState('generating');
+    }
+}
+
+/**
+ * Explicit event hook for tool/command/scout/analysis work. Call this when a
+ * tool call starts executing so the pulse turns green while the extension host
+ * is doing local work (shell, grep, file reads, SPARQL, web fetch, ...).
+ */
+export function notifyToolActivity(): void {
+    if (!state.isGenerating) return;
+    if (hudActivityMode !== 'internal') {
+        setHudActivityState('internal');
+    }
+}
+(window as any).setHudActivityState = setHudActivityState;
+(window as any).notifyStreamActivity = notifyStreamActivity;
+(window as any).notifyToolActivity = notifyToolActivity;
+
+let imageZoomEscHandler: ((e: KeyboardEvent) => void) | null = null;
+
 /**
  * Opens a full-screen high-fidelity zoom of the clicked image.
  */
@@ -27,13 +157,20 @@ export function openImageZoom(src: string) {
         displayImg.src = src;
         overlay.classList.add('active');
         
-        // Add one-time listener for ESC key
+        // Add ESC listener (idempotent: drop any prior handler to avoid accumulation across opens)
+        if (imageZoomEscHandler) {
+            document.removeEventListener('keydown', imageZoomEscHandler);
+        }
         const escListener = (e: KeyboardEvent) => {
             if (e.key === 'Escape') {
                 closeImageZoom();
-                document.removeEventListener('keydown', escListener);
+                if (imageZoomEscHandler) {
+                    document.removeEventListener('keydown', imageZoomEscHandler);
+                    imageZoomEscHandler = null;
+                }
             }
         };
+        imageZoomEscHandler = escListener;
         document.addEventListener('keydown', escListener);
     }
 }
@@ -1096,12 +1233,14 @@ function initCanvasEvents() {
     };
 
     dom.editorCancelBtn.onclick = () => {
+        stopWebcam();
         dom.editorModal.style.display = 'none';
     };
 
     dom.editorSaveBtn.onclick = () => {
         // Ensure any active text is drawn before capturing the data URL
         commitTextToCanvas();
+        stopWebcam();
 
         // Temporarily clear selection highlights before raster flattening
         const previousSelection = selectedShape;
@@ -1298,6 +1437,18 @@ export function setCalculatingTokens(isCalculating: boolean, text?: string) {
 
 export function setGeneratingState(isGenerating: boolean, statusText?: string, showRaiseHand: boolean = false, buttonLabel?: string) {
     state.isGenerating = isGenerating;
+    if (!isGenerating) {
+        setHudActivityState('idle');
+    } else {
+        // Default to generating (red pulse) the instant generation starts, so
+        // the HUD is never stuck idle while the model is actually responding.
+        // The observer upgrades to internal (green) only while an internal-work
+        // status is showing; the stream/tool handlers can also bump explicitly.
+        const initialMode: HudActivityMode = (statusText && classifyHudActivity(statusText) === 'internal')
+            ? 'internal'
+            : 'generating';
+        setHudActivityState(initialMode);
+    }
     // Ensure project loader is cleared if we are starting a real generation
     if (isGenerating) hideProjectLoader();
 
@@ -1780,6 +1931,8 @@ export function syncExpansionBlocks() {
     }
 }
 
+let sovereignZoomEscHandler: ((e: KeyboardEvent) => void) | null = null;
+
 /**
  * Global internal image viewer to bypass browser popup blockers.
  */
@@ -1827,13 +1980,20 @@ export function openSovereignZoom(dataUri: string) {
         };
     }
 
-    // Capture Escape key to close the overlay
+    // Capture Escape key to close the overlay (idempotent: drop any prior handler to avoid accumulation)
+    if (sovereignZoomEscHandler) {
+        window.removeEventListener('keydown', sovereignZoomEscHandler);
+    }
     const handleEsc = (e: KeyboardEvent) => {
         if (e.key === 'Escape') {
             closeSovereignZoom();
-            window.removeEventListener('keydown', handleEsc);
+            if (sovereignZoomEscHandler) {
+                window.removeEventListener('keydown', sovereignZoomEscHandler);
+                sovereignZoomEscHandler = null;
+            }
         }
     };
+    sovereignZoomEscHandler = handleEsc;
     window.addEventListener('keydown', handleEsc);
 }
 
@@ -2532,14 +2692,20 @@ export function updateBadges() {
 
     if (!container) {
         console.log("[Lollms Debug] updateBadges deferred: active-badges container not yet present in DOM.");
-        if (!(window as any)._badgeRetryTimeout) {
+        // Bound the retry loop so a disposed/unmounted panel cannot spin forever
+        const retries = ((window as any)._badgeRetryCount || 0) + 1;
+        (window as any)._badgeRetryCount = retries;
+        if (retries <= 50 && !(window as any)._badgeRetryTimeout) {
             (window as any)._badgeRetryTimeout = setTimeout(() => {
                 (window as any)._badgeRetryTimeout = null;
                 updateBadges();
             }, 100);
+        } else if (retries > 50) {
+            console.warn("[Lollms Debug] updateBadges stopped retrying: active-badges container never appeared.");
         }
         return;
     }
+    (window as any)._badgeRetryCount = 0;
 
     // Defensive Guard: If capabilities are not ready yet, supply fallback defaults instead of returning early and hanging
     if (!state.capabilities) {
@@ -2717,43 +2883,6 @@ export function updateBadges() {
         const badgeLabel = hasAnyAuto
             ? `⚡ Auto ${activeFlags.join('')} (${activeCount}/5)`
             : '🛠️ Manual Mode';
-
-        const codeIssuingBadge = document.createElement('span');
-        codeIssuingBadge.id = 'hud-code-issuing-badge';
-        codeIssuingBadge.className = `mode-badge ${allowCodeExecution ? 'active' : 'inactive'} clickable`;
-        if (allowCodeExecution) {
-            codeIssuingBadge.style.cssText = 'background-color: var(--vscode-charts-blue); color: white; border-color: var(--vscode-charts-blue);';
-        }
-        codeIssuingBadge.title = allowCodeExecution
-            ? 'Code Issuing is ON: LLM is instructed how to emit <execute_code> blocks. Click to turn OFF (also turns off Auto-Execute Code).'
-            : 'Code Issuing is OFF: Code execution prompts are omitted so the LLM will not issue <execute_code> blocks. Click to activate.';
-        codeIssuingBadge.innerHTML = `<span class="codicon codicon-terminal"></span><span class="badge-label">${allowCodeExecution ? 'Code Issuing: ON' : 'Code Issuing: OFF'}</span>`;
-        codeIssuingBadge.onclick = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const nextAllow = !allowCodeExecution;
-            const partial: any = { allowCodeExecution: nextAllow };
-            if (!nextAllow) {
-                partial.autoExecuteCode = false;
-            }
-            if (state.capabilities) {
-                state.capabilities.allowCodeExecution = nextAllow;
-                if (!nextAllow) {
-                    state.capabilities.autoExecuteCode = false;
-                }
-                const anyAutoTools = !!(state.capabilities.autoExecuteScouting || state.capabilities.autoExecuteCode);
-                state.capabilities.autoExecuteTools = anyAutoTools;
-                (state.capabilities as any).autoMode = anyAutoTools || !!state.capabilities.autoApply || !!state.capabilities.requireExplicitEndTag;
-                partial.autoExecuteTools = state.capabilities.autoExecuteTools;
-                partial.autoMode = (state.capabilities as any).autoMode;
-            }
-            vscode.postMessage({
-                command: 'updateDiscussionCapabilitiesPartial',
-                partial
-            });
-            updateBadges();
-        };
-        infraGroup.appendChild(codeIssuingBadge);
 
         const autoWrapper = document.createElement('div');
         autoWrapper.className = 'badge-wrapper';
@@ -4039,11 +4168,12 @@ export function renderContextUsage(usage: any[]) {
         updateCheckState();
     };
 
-    container.addEventListener('change', (e) => {
+    // Assign (not addEventListener) so repeated renders do not stack duplicate change handlers on the persistent container
+    container.onchange = (e: Event) => {
         if ((e.target as HTMLElement).classList.contains('usage-row-check')) {
             updateCheckState();
         }
-    });
+    };
 
     bulkBtn.onclick = () => {
         const paths = Array.from(container.querySelectorAll('.usage-row-check:checked')).map((cb: any) => cb.value);
@@ -4306,7 +4436,8 @@ export function renderWizardSkillsTab(skillsTree: any, discussionSkills: string[
     }
 
     renderSkillsTree(container, skillsTree, discussionSkills, projectSkills);
-    container.addEventListener('change', () => updateWizardSkillsCount());
+    // Assignment avoids stacking duplicate change handlers each time the wizard tab is rendered
+    container.onchange = () => updateWizardSkillsCount();
     updateWizardSkillsCount();
 }
 
@@ -7295,13 +7426,17 @@ export function renderInterProjectOutput(text: string) {
     const copyBtn = document.getElementById('inter-project-copy-btn') as HTMLButtonElement | null;
     const saveBtn = document.getElementById('inter-project-save-btn') as HTMLButtonElement | null;
 
-    interProjectPromptState.generatedText = text;
-    const hasText = text.trim().length > 0;
+    // Thinking models may include reasoning blocks in their response. Keep only
+    // the actual inter-project prompt so previews and clipboard actions never
+    // expose internal thoughts to the user.
+    const promptText = processThinkTags(text).processedContent;
+    interProjectPromptState.generatedText = promptText;
+    const hasText = promptText.trim().length > 0;
 
     if (copyBtn) copyBtn.disabled = !hasText;
     if (saveBtn) saveBtn.disabled = !hasText;
-    if (rawEl && rawEl.value !== text) {
-        rawEl.value = text;
+    if (rawEl && rawEl.value !== promptText) {
+        rawEl.value = promptText;
     }
 
     if (previewEl) {
@@ -7313,7 +7448,7 @@ export function renderInterProjectOutput(text: string) {
                 </div>`;
         } else {
             try {
-                previewEl.innerHTML = sanitizer.sanitize((window as any).marked.parse(text) as string);
+                previewEl.innerHTML = sanitizer.sanitize((window as any).marked.parse(promptText) as string);
             } catch {
                 previewEl.textContent = text;
             }

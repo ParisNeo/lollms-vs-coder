@@ -11,6 +11,7 @@ import {
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
 import { 
     setGeneratingState, 
+    setHudActivityState,
     updateBadges, 
     renderProfilesInModal, 
     renderSkillsTree, 
@@ -100,6 +101,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 {
                     const stream = state.streamingMessages[message.id];
                     if (!stream) break;
+                    setHudActivityState('generating');
                     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.id}']`) as HTMLElement;
                     if (!wrapper) break;
                     if (!wrapper.dataset.firstTokenReceived) {
@@ -648,6 +650,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'syncStreamBuffer':
                 {
+                    setHudActivityState('generating');
                     const text = typeof message.buffer === 'string' ? message.buffer : JSON.stringify(message.buffer);
                     if (state.streamingMessages[message.id]) {
                         state.streamingMessages[message.id].buffer = text;
@@ -658,6 +661,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
             case 'executeActionStart': {
+                // Internal work (tool/grep/code exec) is starting — pulse the HUD green.
+                if (state.isGenerating) setHudActivityState('internal');
                 const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
                 const row = wrapper?.querySelector(`#tool-row-${message.messageId}-${message.actionIndex}`) as HTMLElement;
                 if (row) {
@@ -682,7 +687,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
             }
-            case 'executeActionResult': {
+            case 'executeActionEnd': {
+                setHudActivityState('internal');
                 const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
                 const row = wrapper?.querySelector(`#tool-row-${message.messageId}-${message.actionIndex}`) as HTMLElement;
                 if (row) {
@@ -2052,6 +2058,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'tokenCalculationProgress':
                 {
+                    // Background scouting/token calculation is internal — pulse green while running.
+                    if (state.isGenerating) setHudActivityState('internal');
                     const barContainer = document.getElementById('file-tree-progress-container');
                     const bar = document.getElementById('file-tree-progress-bar');
                     if (barContainer && bar) {
@@ -3031,6 +3039,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 if (dom.skillsModal) dom.skillsModal.classList.remove('visible');
                 break;     
             case 'applyAllStart': {
+                // Batch patch application is internal disk work — pulse the HUD green.
+                if (state.isGenerating) setHudActivityState('internal');
                 const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
                 const hunkAttr = message.hunkIndex !== undefined ? `[data-hunk-index='${message.hunkIndex}']` : ':not([data-hunk-index])';
                 const row = wrapper?.querySelector(`.apply-row[data-block-index='${message.blockIndex}']${hunkAttr}`) as HTMLElement;

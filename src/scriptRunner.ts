@@ -4,6 +4,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { runCommandInTerminal } from './extensionState';
 import { getAvailableShells } from './utils';
+import { AgentSecurityGuard } from './security/agentSecurityGuard';
+import { ContextPoisoningGate } from './security/contextPoisoningGate';
 
 export class ScriptRunner {
   private pythonExtApi: any;
@@ -54,6 +56,31 @@ Translate the provided ${fromLang} script into a ${toLang} script for the user's
 
     let currentCode = code;
     let currentLang = language.toLowerCase();
+
+    const workspaceRoots = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
+    const secLevel = panel.agentManager?.getSecurityLevel?.() || 'guarded';
+    const validation = AgentSecurityGuard.validateExecution(currentCode, currentLang, {
+        workspaceRoots,
+        level: secLevel
+    });
+    if (validation.decision === 'block') {
+        await panel.addMessageToDiscussion({
+            role: 'system',
+            content: `🛑 **Security Violation**: Execution blocked.\nReason: ${validation.reason}`
+        });
+        return;
+    }
+    if (validation.decision === 'confirm') {
+        const confirm = await vscode.window.showWarningMessage(
+            `🛡️ Confirm Script Execution (${currentLang}): ${validation.reason}`,
+            { modal: true },
+            'Run Once',
+            'Cancel'
+        );
+        if (confirm !== 'Run Once') {
+            return;
+        }
+    }
 
     // --- AGENTIC TRANSLATION LOGIC ---
     if (isWin && (currentLang === 'bash' || currentLang === 'sh' || currentLang === 'shell')) {
@@ -197,16 +224,22 @@ Translate the provided ${fromLang} script into a ${toLang} script for the user's
     try {
         const result = await runCommandInTerminal(fullCommand, workspaceRoot, `Lollms Script: ${currentLang}`, undefined, { shell: targetShell });
         
-        // Strip ANSI codes from the output before adding it to chat/context
+        // Strip ANSI codes and sanitize against context poisoning before adding to chat/context
         const { stripAnsiCodes } = require('./utils');
-        const cleanOutput = stripAnsiCodes(result.output);
+        const rawCleanOutput = stripAnsiCodes(result.output);
+        const gateRes = await ContextPoisoningGate.sanitizeExecutionOutput(rawCleanOutput, `script_runner://${currentLang}`);
+        const cleanOutput = gateRes.sanitizedOutput;
 
-        const statusEmoji = result.success ? '✅' : '❌';
+        const statusEmoji = (result.success && !gateRes.blocked) ? '✅' : '❌';
         const resultMessage = { 
             role: 'system' as const, 
-            content: `**Execution Result (${statusEmoji} Success: ${result.success})**\n\n\`\`\`\n${cleanOutput || '(No output)'}\n\`\`\`` 
+            content: `**Execution Result (${statusEmoji} Success: ${result.success && !gateRes.blocked})**\n\n\`\`\`\n${cleanOutput || '(No output)'}\n\`\`\`` 
         };
         await panel.addMessageToDiscussion(resultMessage);
+
+        if (gateRes.blocked) {
+            return;
+        }
 
         if (reprompt) {
             const repromptPayload = `### 📋 SCRIPT EXECUTION OBSERVATION\n` +

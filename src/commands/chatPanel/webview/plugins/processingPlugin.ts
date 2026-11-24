@@ -11,7 +11,7 @@ function renderProcessingBlock(rawBlock: string): string {
         if (block.includes('<pre') && !block.includes('</pre>')) {
             block += '</pre>';
         }
-        if (block.includes('<div class="processing-body"') && !block.includes('</div>')) {
+        if (/<div\b[^>]*\bprocessing-body\b/i.test(block) && !/<\/div>\s*(?:<\/details>\s*)?$/i.test(block.trimEnd())) {
             block += '</div>';
         }
         block += '</details>';
@@ -53,10 +53,128 @@ function renderProcessingBlock(rawBlock: string): string {
             } catch {
                 // Keep original content if markdown parsing fails
             }
+        } else if (trimmedBody && isPreformatted) {
+            const sanitizedBody = sanitizer.sanitize(trimmedBody);
+            block = block.substring(0, bodyMatch.index!) + `${divOpen}${sanitizedBody}${divClose}`;
         }
     }
 
     return block;
+}
+
+export function findBalancedProcessingBlockRanges(
+    text: string,
+    excludedRanges: { start: number; end: number }[] = []
+): { start: number; end: number }[] {
+    const ranges: { start: number; end: number }[] = [];
+    if (!text || typeof text !== 'string') return ranges;
+
+    const isExcluded = (offset: number) => excludedRanges.some(r => offset >= r.start && offset < r.end);
+    const procOpenRegex = /^<details\b[^>]*\bclass=["'][^"']*\bprocessing-block\b[^"']*["'][^>]*>/i;
+    const detailsOpenRegex = /^<details\b[^>]*>/i;
+    const detailsCloseRegex = /^<\/details\s*>/i;
+
+    let openFence: { char: string; len: number } | null = null;
+    let activeBlock: { start: number; depth: number } | null = null;
+
+    let lineStart = 0;
+    const len = text.length;
+    while (lineStart < len) {
+        const nlIdx = text.indexOf('\n', lineStart);
+        const nextLineStart = nlIdx === -1 ? len : nlIdx + 1;
+        const lineEnd = (nlIdx === -1 ? len : nlIdx) - (nlIdx > lineStart && text[nlIdx - 1] === '\r' ? 1 : 0);
+        const lineText = text.slice(lineStart, lineEnd);
+
+        if (!activeBlock && isExcluded(lineStart)) {
+            lineStart = nextLineStart;
+            continue;
+        }
+
+        const fm = lineText.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+        if (openFence) {
+            if (fm && fm[1][0] === openFence.char && fm[1].length >= openFence.len && (fm[2] || '').trim() === '') {
+                openFence = null;
+            }
+            lineStart = nextLineStart;
+            continue;
+        }
+
+        if (fm) {
+            const marker = fm[1];
+            const ch = marker[0];
+            const trailing = (fm[2] || '').trim();
+            const isInline = ch === '`' && trailing.includes(marker);
+            if (!isInline) {
+                openFence = { char: ch, len: marker.length };
+                lineStart = nextLineStart;
+                continue;
+            }
+        }
+
+        let col = 0;
+        while (col < lineText.length) {
+            if (lineText[col] === '`') {
+                let t = 0;
+                while (col + t < lineText.length && lineText[col + t] === '`') t++;
+                let i = col + t;
+                let endCol = -1;
+                while (i < lineText.length) {
+                    if (lineText[i] === '`') {
+                        let c = 0;
+                        while (i + c < lineText.length && lineText[i + c] === '`') c++;
+                        if (c === t) { endCol = i + c; break; }
+                        i += c;
+                    } else {
+                        i++;
+                    }
+                }
+                col = endCol !== -1 ? endCol : col + t;
+                continue;
+            }
+
+            if (lineText[col] === '<') {
+                const absOffset = lineStart + col;
+                const slice = lineText.slice(col);
+
+                if (!activeBlock) {
+                    if (!isExcluded(absOffset)) {
+                        const pm = slice.match(procOpenRegex);
+                        if (pm) {
+                            activeBlock = { start: absOffset, depth: 1 };
+                            col += pm[0].length;
+                            continue;
+                        }
+                    }
+                } else {
+                    const cm = slice.match(detailsCloseRegex);
+                    if (cm) {
+                        activeBlock.depth--;
+                        col += cm[0].length;
+                        if (activeBlock.depth === 0) {
+                            ranges.push({ start: activeBlock.start, end: lineStart + col });
+                            activeBlock = null;
+                        }
+                        continue;
+                    }
+                    const om = slice.match(detailsOpenRegex);
+                    if (om) {
+                        activeBlock.depth++;
+                        col += om[0].length;
+                        continue;
+                    }
+                }
+            }
+            col++;
+        }
+
+        lineStart = nextLineStart;
+    }
+
+    if (activeBlock) {
+        ranges.push({ start: activeBlock.start, end: len });
+    }
+
+    return ranges;
 }
 
 export const processingPlugin: TagPlugin = {
@@ -65,41 +183,13 @@ export const processingPlugin: TagPlugin = {
         const blocks: { html: string; start: number; end: number }[] = [];
         if (!text || typeof text !== 'string') return blocks;
 
-        const openRegex = /<details\b[^>]*\bclass=["'][^"']*\bprocessing-block\b[^"']*["'][^>]*>/gi;
-        let match: RegExpExecArray | null;
-
-        while ((match = openRegex.exec(text)) !== null) {
-            const start = match.index;
-            const cursor = start + match[0].length;
-            let depth = 1;
-
-            const tagFinder = /<\/?details\b[^>]*>/gi;
-            tagFinder.lastIndex = cursor;
-            let tMatch: RegExpExecArray | null;
-            let end = -1;
-
-            while ((tMatch = tagFinder.exec(text)) !== null) {
-                if (tMatch[0].toLowerCase().startsWith('</')) {
-                    depth--;
-                    if (depth === 0) {
-                        end = tMatch.index + tMatch[0].length;
-                        break;
-                    }
-                } else {
-                    depth++;
-                }
-            }
-
-            if (end === -1) {
-                end = text.length;
-            }
-
-            const rawBlock = text.substring(start, end);
+        const ranges = findBalancedProcessingBlockRanges(text);
+        for (const r of ranges) {
+            const rawBlock = text.substring(r.start, r.end);
             const html = renderProcessingBlock(rawBlock);
             if (html) {
-                blocks.push({ html, start, end });
+                blocks.push({ html, start: r.start, end: r.end });
             }
-            openRegex.lastIndex = end;
         }
 
         return blocks;

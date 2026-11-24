@@ -1453,9 +1453,20 @@ private _cachedTreeString: string | null = null;
 - Note: If a file is in structure mode \`[D]\` and you later need its full content or need to modify it, call \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` to upgrade it directly from structure to full code (\`[C]\`).\n`;
     result.text += `5. **Unpossessed Files (NO PATH HALLUCINATIONS)**: Files with no marker have hidden content. To load them, use \`<add_files_to_context>\` with the EXACT path from the tree. Never guess or hallucinate paths that do not exist in the tree.\n\n`;
 
+    result.text += `### 🔋 CONTEXT BUDGET & MUTING PROTOCOL (READ BEFORE ADDING FILES)\n`;
+    result.text += `The context window is a hard, finite budget shared by every loaded file. When it saturates, the automatic context guard EVICTS the lowest-priority files to stay under the limit — this is why a file or symbol you just requested can appear and then vanish on your next turn. Do NOT fight this loop; cooperate with the budget:\n`;
+    result.text += `1. **Release BEFORE you Acquire**: If the context is near capacity, or a previous \`<add_files_to_context>\` / \`<show_symbol>\` request was silently dropped, FIRST mute the files you no longer need: \`<mute_files>\\npath/to/stale_file.ext\\n</mute_files>
+
+\`. Muted files instantly release their tokens while remaining visible in the tree as \`[M]\`.\n`;
+    result.text += `2. **Then add your target**: Once budget is freed, call \`<add_files_to_context>\` (or \`<show_symbol>\`) for the file you actually need. Files added after sufficient budget is released will NOT be evicted.\n`;
+    result.text += `3. **Never blindly re-add**: If a file you added is missing on the next turn, do NOT loop by re-adding it into a still-full context. Mute one or more stale \`[C]\` files first to free room, THEN re-add the target.\n`;
+    result.text += `4. **Muting is reversible**: Muted files are never deleted. Restore them anytime with \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>
+
+\` to get full content \`[C]\` back. Mute aggressively to protect the budget; unmute precisely when needed.\n\n`;
+
     result.text += `### 🏷️ CONTEXT MARKERS (LEGEND)\n`;
     result.text += `- **\`[C]\` (Full Content Loaded)**: Full source code is ALREADY in memory under 'LOADED FILE CONTENTS'. Ready for editing.\n`;
-    result.text += `- **\`[M]\` (Muted in Context)**: Content is muted (0 tokens). Calling \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` un-mutes it and loads full code (\`[C]\`).\n`;
+    result.text += `- **\`[M]\` (Muted in Context)**: Content is muted (0 tokens, still listed in the tree). Use \`<mute_files>\\npath/to/file.ext\\n</mute_files>\` to deliberately release budget, and \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` to restore full code (\`[C]\`).\n`;
     result.text += `- **\`[D]\` (Structure / Definitions Only)**: Only signatures/structure are loaded. Calling \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` upgrades this file directly from structure-only to full code (\`[C]\`). Keep structure only when context is too bloated or files are reference-only.\n`;
     result.text += `- **(No Marker)**: File content is HIDDEN. Use <add_files_to_context> with the exact tree path to load it.\n\n`;
     

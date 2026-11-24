@@ -20,6 +20,7 @@ import { RLMDatabaseManager } from './rlmDatabaseManager';
 import { FailureMemory } from './agent/failureHandling'; 
 import { Logger } from './logger';
 import { AgentSecurityGuard, AgentSecurityLevel } from './security/agentSecurityGuard';
+import { ContextPoisoningGate } from './security/contextPoisoningGate';
 
 export interface IAgentUI {
     addMessageToDiscussion(message: ChatMessage): Promise<void>;
@@ -243,7 +244,15 @@ Keep it strictly technical and extremely concise.`
             }
 
             // Dynamically remove Web-Search tools when deactivated
-            if (!webSearchEnabled && (t.name === 'search_web' || t.name === 'search_wikipedia' || t.name === 'search_stackoverflow' || t.name === 'scrape_website')) {
+            if (!webSearchEnabled && (
+                t.name === 'search_web' ||
+                t.name === 'search_wikipedia' ||
+                t.name === 'search_stackoverflow' ||
+                t.name === 'scrape_website' ||
+                t.name === 'research_web_page' ||
+                t.name === 'search_arxiv' ||
+                t.name === 'extract_youtube_transcript'
+            )) {
                 return false;
             }
 
@@ -2023,6 +2032,21 @@ Please provide a clear, concise final response to the user summarizing the outco
             this.dashboardUpdater();
         }
 
+        const untrustedOutputTools = new Set([
+            'execute_command', 'run_file', 'execute_python_script', 'run_tests',
+            'search_web', 'search_wikipedia', 'search_stackoverflow', 'scrape_website',
+            'research_web_page', 'search_arxiv', 'extract_youtube_transcript'
+        ]);
+        if (untrustedOutputTools.has(task.action) && result.output) {
+            try {
+                const gateObs = await ContextPoisoningGate.sanitizeExecutionOutput(result.output, `tool://${task.action}`, { signal });
+                result.output = gateObs.sanitizedOutput;
+                if (gateObs.blocked) {
+                    result.success = false;
+                }
+            } catch {}
+        }
+
         let observation = result.output;
         const PREVIEW_LIMIT = 3000;
 
@@ -2137,7 +2161,13 @@ Please provide a clear, concise final response to the user summarizing the outco
             }
         }
 
-        if (this.projectMemoryManager) {
+        const skipMemoryTagsTools = new Set([
+            'execute_command', 'run_file', 'execute_python_script', 'run_tests',
+            'search_web', 'search_wikipedia', 'search_stackoverflow', 'scrape_website',
+            'research_web_page', 'search_arxiv', 'extract_youtube_transcript',
+            'read_file', 'read_files', 'read_external_file'
+        ]);
+        if (this.projectMemoryManager && !skipMemoryTagsTools.has(task.action)) {
             await this.projectMemoryManager.processTags(result.output);
         }
 
@@ -2424,7 +2454,8 @@ ${checkpointOpt}
 
     private async performSecurityAudit(command: string, signal: AbortSignal): Promise<{ safe: boolean, reason: string }> {
         const level = this.getSecurityLevel();
-        const staticRes = AgentSecurityGuard.analyzeShellCommand(command, level);
+        const workspaceRoots = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
+        const staticRes = AgentSecurityGuard.analyzeShellCommand(command, level, workspaceRoots);
         if (staticRes.decision === 'block') {
             this.securityGuard.recordAudit({ verdict: 'blocked', tool: 'execute_command', target: command, reason: staticRes.reason });
             return { safe: false, reason: staticRes.reason };
@@ -2452,10 +2483,10 @@ ${checkpointOpt}
 
     ### 🛡️ SECURITY RULES:
     1. **CRITICAL BLOCKS**: 
-    - No downloading and executing unknown binaries/scripts from the internet (malware risk).
+    - No unauthorized external web/network calls (curl, wget, Invoke-WebRequest, fetch, requests, nc, ssh, etc.) unless strictly using the websearch tool.
     - No searching for or exfiltrating credentials (~/.ssh, ~/.aws, .env files outside workspace).
     - No operations on system directories (/etc, /windows, /bin).
-    2. **WORKSPACE BOUNDARIES**: No path traversal (../../) to access files outside the current project roots.
+    2. **WORKSPACE BOUNDARIES**: No escaping the workspace (no cd .., cd /, ~/, ../, absolute paths outside workspace).
     3. **DESTRUCTIVE ACTIONS**:
     - Deleting code is ALLOWED only if it is inside a Git repository (recoverable).
     - Massive deletions in non-git folders are FORBIDDEN.
@@ -2927,12 +2958,22 @@ ${checkpointOpt}
     public async runCommand(command: string, signal: AbortSignal, options?: { shell?: any, timeoutMs?: number, projectRoot?: string }): Promise<{ success: boolean, output: string }> {
         if (!this.currentWorkspaceFolder) return { success: false, output: "No workspace." };
 
+        const activeRoots = (vscode.workspace.workspaceFolders || []).map(f => path.resolve(f.uri.fsPath));
+        const requestedRoot = path.resolve(options?.projectRoot || this.currentWorkspaceFolder.uri.fsPath);
+        const isWin = process.platform === 'win32';
+        const isWithinWorkspace = activeRoots.some(r => {
+            const rr = isWin ? r.toLowerCase() : r;
+            const rq = isWin ? requestedRoot.toLowerCase() : requestedRoot;
+            return rq === rr || rq.startsWith(rr + path.sep);
+        });
+        if (!isWithinWorkspace) {
+            return { success: false, output: `🛑 SECURITY VIOLATION: Command working directory '${requestedRoot}' is outside the workspace.` };
+        }
+
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const activationScript = config.get<string>('agent.envActivationScript');
         let finalCommand = command;
-        const isWin = process.platform === 'win32';
-
-        const targetRoot = options?.projectRoot || this.currentWorkspaceFolder.uri.fsPath;
+        const targetRoot = requestedRoot;
         let envPath = this.sessionState.projectEnvironments[targetRoot] || this.sessionState.activeEnv;
 
         if (!envPath) {

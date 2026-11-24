@@ -144,12 +144,12 @@ export class ChatPanel {
   private _tokenizationPendingRerun = false;
   private _tokenizationPendingOptions: any = null;
 
-  public static createOrShow(services: LollmsServices, discussionId: string): ChatPanel {
-    const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
+  public static createOrShow(services: LollmsServices, discussionId: string, preferredColumn?: vscode.ViewColumn): ChatPanel {
+    const column = preferredColumn || (vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined);
 
     const existingPanel = ChatPanel.panels.get(discussionId);
     if (existingPanel) {
-      existingPanel._panel.reveal(column);
+      existingPanel._panel.reveal(column, false);
       ChatPanel.currentPanel = existingPanel;
       return existingPanel;
     }
@@ -293,12 +293,14 @@ export class ChatPanel {
         const enableAutoFix = options?.autoFix !== undefined ? options.autoFix : (this._discussionCapabilities.autoFix !== false);
         const isSystemId = messageId.startsWith('self_correction') || messageId.startsWith('guardian') || messageId.startsWith('system') || messageId.startsWith('inspection');
 
+        const tagScanContent = this.stripProtectedRegionsForTagScan(content);
+
         if (!options?.skipContextTools) {
             await this.processStructureTags(content);
 
-            const muteRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<mute_files\b[^>]*?>([\s\S]*?)<\/mute_files>/gim;
+            const muteRegex = /<mute_files\b[^>]*?>([\s\S]*?)<\/mute_files>/gim;
             let muteMatch;
-            while ((muteMatch = muteRegex.exec(content)) !== null) {
+            while ((muteMatch = muteRegex.exec(tagScanContent)) !== null) {
                 if (signal.aborted) break;
                 const paths = muteMatch[1].split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
                 if (paths.length > 0) {
@@ -306,9 +308,9 @@ export class ChatPanel {
                 }
             }
 
-            const unmuteRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<unmute_files\b[^>]*?>([\s\S]*?)<\/unmute_files>/gim;
+            const unmuteRegex = /<unmute_files\b[^>]*?>([\s\S]*?)<\/unmute_files>/gim;
             let unmuteMatch;
-            while ((unmuteMatch = unmuteRegex.exec(content)) !== null) {
+            while ((unmuteMatch = unmuteRegex.exec(tagScanContent)) !== null) {
                 if (signal.aborted) break;
                 const paths = unmuteMatch[1].split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
                 if (paths.length > 0) {
@@ -317,9 +319,9 @@ export class ChatPanel {
             }
 
             // 0.2. Automatically unmute any muted files requested via add_files_to_context
-            const addContextRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<add_files_to_context\b[^>]*?>([\s\S]*?)<\/add_files_to_context>/gim;
+            const addContextRegex = /<add_files_to_context\b[^>]*?>([\s\S]*?)<\/add_files_to_context>/gim;
             let addContextMatch;
-            while ((addContextMatch = addContextRegex.exec(content)) !== null) {
+            while ((addContextMatch = addContextRegex.exec(tagScanContent)) !== null) {
                 if (signal.aborted) break;
                 const paths = addContextMatch[1].split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
                 if (paths.length > 0) {
@@ -335,9 +337,9 @@ export class ChatPanel {
         // 0.5. Process Mission Briefing Section Tags (Autonomous in Agent Mode or when Auto-Apply is active)
         const isAgent = this._discussionCapabilities.agentMode === true;
         const isAutoApply = this._discussionCapabilities.autoApply === true;
-        const briefingRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<mission_briefing\b([^>]*?)(?:\/>|>([\s\S]*?)<\/mission_briefing>)/gim;
+        const briefingRegex = /<mission_briefing\b([^>]*?)(?:\/>|>([\s\S]*?)<\/mission_briefing>)/gim;
         let briefingMatch;
-        while ((briefingMatch = briefingRegex.exec(content)) !== null) {
+        while ((briefingMatch = briefingRegex.exec(tagScanContent)) !== null) {
             if (signal.aborted) break;
             if (!isAgent && !isAutoApply) {
                 // In Assistant and Co-Engineer modes without auto-apply, the interactive proposal card is rendered in the webview with Apply button
@@ -391,9 +393,9 @@ export class ChatPanel {
         }
 
         // 0.6. Process Knowledge Graph Insight Tags (<record_insight>, <add_insight>)
-        const insightRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<(?:record_insight|add_insight)\b([^>]*?)>([\s\S]*?)<\/(?:record_insight|add_insight)>/gim;
+        const insightRegex = /<(?:record_insight|add_insight)\b([^>]*?)>([\s\S]*?)<\/(?:record_insight|add_insight)>/gim;
         let insMatch;
-        while ((insMatch = insightRegex.exec(content)) !== null) {
+        while ((insMatch = insightRegex.exec(tagScanContent)) !== null) {
             if (signal.aborted) break;
             const attrStr = insMatch[1] || "";
             const inner = insMatch[2].trim();
@@ -421,9 +423,9 @@ export class ChatPanel {
         }
 
         // 0.7. Process Knowledge Graph Ingestion Tags
-        const updateKnowledgeRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<update_knowledge\b([^>]*?)>([\s\S]*?)<\/update_knowledge>/gim;
+        const updateKnowledgeRegex = /<update_knowledge\b([^>]*?)>([\s\S]*?)<\/update_knowledge>/gim;
         let updateKnMatch;
-        while ((updateKnMatch = updateKnowledgeRegex.exec(content)) !== null) {
+        while ((updateKnMatch = updateKnowledgeRegex.exec(tagScanContent)) !== null) {
             if (signal.aborted) break;
             const attrStr = updateKnMatch[1] || "";
             const innerContent = updateKnMatch[2].trim();
@@ -449,10 +451,10 @@ export class ChatPanel {
 
         // 0.8. Process Proposed File Deletions during Auto-Apply (if enabled)
         if (this._discussionCapabilities.fileDelete !== false) {
-            const deleteTagsRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<(delete_files|delete_file)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/\1>)/gim;
+            const deleteTagsRegex = /<(delete_files|delete_file)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/\1>)/gim;
             let delMatch: RegExpExecArray | null;
             const pathsToDelete: string[] = [];
-            while ((delMatch = deleteTagsRegex.exec(content)) !== null) {
+            while ((delMatch = deleteTagsRegex.exec(tagScanContent)) !== null) {
                 if (signal.aborted) break;
                 const attrStr = delMatch[2] || '';
                 const inner = (delMatch[3] || '').trim();
@@ -1729,7 +1731,8 @@ If you need to modify files, privilege using <unmute_files> to recover full cont
           } else if (typeof newContent === 'string' && newContent.startsWith('APPEND_TAG:')) {
               const tag = newContent.substring(11);
               if (typeof msg.content === 'string' && !msg.content.includes(tag)) {
-                  msg.content = msg.content + "\n" + tag;
+                  const sep = msg.content.length === 0 ? '' : (msg.content.endsWith('\n\n') ? '' : (msg.content.endsWith('\n') ? '\n' : '\n\n'));
+                  msg.content = msg.content + sep + tag.trimStart();
               }
           } else {
               msg.content = newContent;
@@ -5636,6 +5639,18 @@ The user has CONFIRMED and VALIDATED your plan.
 
             loopMessages[0] = { role: 'system', content: finalBaseInstructions };
 
+            if (currentFullResponseBuffer.length > 0 && !currentFullResponseBuffer.endsWith('\n\n')) {
+                const pad = currentFullResponseBuffer.endsWith('\n') ? '\n' : '\n\n';
+                currentFullResponseBuffer += pad;
+                fullResponse = currentFullResponseBuffer;
+                this._panel.webview.postMessage({
+                    command: 'appendMessageChunk',
+                    id: assistantMessageId,
+                    chunk: pad
+                });
+            }
+            const bufferBeforeTurn = currentFullResponseBuffer;
+
             let turnResponse = "";
             this.processManager.updateDescription(processId, isFastMode ? "Coding..." : `Assistant Turn ${currentTurnIndex}: Reasoning & Evaluating...`);
             this.updateGeneratingState();
@@ -5672,6 +5687,22 @@ The user has CONFIRMED and VALIDATED your plan.
                 const abortErr = new Error('AbortError');
                 abortErr.name = 'AbortError';
                 throw abortErr;
+            }
+
+            // Close any unclosed/malformed tags from this round and normalize mid-line tags onto clean lines
+            // so a mistake in Round N cannot poison or corrupt subsequent rounds.
+            const roundRepair = this.repairAndNormalizeRoundOutput(turnResponse);
+            if (roundRepair.wasRepaired) {
+                this.log(`[Round ${currentTurnIndex} Tag Guard] Repaired round output: ${roundRepair.repairs.join('; ')}`, 'WARN');
+                turnResponse = roundRepair.repaired;
+                currentFullResponseBuffer = bufferBeforeTurn + turnResponse;
+                fullResponse = currentFullResponseBuffer;
+                this.updateThinkTimingsFromBuffer(currentFullResponseBuffer, thinkTimings, firstTokenTimestamp);
+                this._panel.webview.postMessage({
+                    command: 'syncStreamBuffer',
+                    id: assistantMessageId,
+                    buffer: currentFullResponseBuffer
+                });
             }
 
             const requiresEndTagCap = (this._discussionCapabilities as any).requireExplicitEndTag === true ||
@@ -5732,63 +5763,32 @@ The user has CONFIRMED and VALIDATED your plan.
                 strippedTurn = strippedTurn.substring(danglingThinkClose.index + danglingThinkClose[0].length).trimStart();
             }
             const scannableTurn = normalizePseudoFileBlocks(strippedTurn);
-            const protectedRanges: { start: number, end: number }[] = [];
-
-            // Protect closed <file> mutation blocks (unclosed malformed <file> tags must not swallow subsequent tool calls)
-            const extractedFilesInTurn = extractFileBlocks(scannableTurn);
-            for (const fb of extractedFilesInTurn) {
-                if (fb.isClosed) {
-                    protectedRanges.push({ start: fb.start, end: fb.end });
-                }
-            }
-
-            // Protect closed fenced code blocks unless the fence only wraps a Lollms tool or form tag
-            const toolTagNamesPattern = /^(?:add_files_to_context|remove_files_from_context|mute_files|unmute_files|load_knowledge|update_knowledge|unpack_directory|load_structure|read_definitions|show_symbol|get_symbol_code|read_symbol|peek_files|read_full_file|read_file|read_external_file|grep|grep_search|search_files|manage_symbols|query_architecture|sparql|run_tests|lollms_tool|execute_code|lollms_form)\b/i;
-            const fenceRegex = /```([a-zA-Z0-9_\-]*)[ \t]*\r?\n([\s\S]*?)```/g;
-            let fMatch: RegExpExecArray | null;
-            while ((fMatch = fenceRegex.exec(scannableTurn)) !== null) {
-                const langHint = (fMatch[1] || '').toLowerCase();
-                const innerTrim = (fMatch[2] || '').trim();
-                const isToolWrapperFence = (!langHint || ['xml', 'tool', 'tools', 'sparql'].includes(langHint)) &&
-                    innerTrim.startsWith('<') &&
-                    toolTagNamesPattern.test(innerTrim.substring(1));
-                if (!isToolWrapperFence) {
-                    protectedRanges.push({ start: fMatch.index, end: fMatch.index + fMatch[0].length });
-                }
-            }
-
-            // Protect inline single-backtick code mentions
-            const inlineBacktickRegex = /`[^`\r\n]+`/g;
-            let ibMatch: RegExpExecArray | null;
-            while ((ibMatch = inlineBacktickRegex.exec(scannableTurn)) !== null) {
-                protectedRanges.push({ start: ibMatch.index, end: ibMatch.index + ibMatch[0].length });
-            }
+            const protectedRanges = this.getProtectedContentRanges(scannableTurn, { keepToolWrapperFences: true });
 
             const isIndexInsideFence = (index: number) => {
                 return protectedRanges.some(r => index >= r.start && index < r.end);
             };
 
-            const linePrefix = `(?:^[ \\t]*(?:(?:[-*+]|\\d+\\.)[ \\t]+|>[ \\t]*)?|(?<=[>:.!?])[ \\t]*)`;
             const patterns = [
-                { tag: 'add_files_to_context', pattern: new RegExp(`${linePrefix}<add_files_to_context\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/add_files_to_context>)`, 'gim') },
-                { tag: 'remove_files_from_context', pattern: new RegExp(`${linePrefix}<remove_files_from_context\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/remove_files_from_context>)`, 'gim') },
-                { tag: 'mute_files', pattern: new RegExp(`${linePrefix}<mute_files\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/mute_files>)`, 'gim') },
-                { tag: 'unmute_files', pattern: new RegExp(`${linePrefix}<unmute_files\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/unmute_files>)`, 'gim') },
-                { tag: 'load_knowledge', pattern: new RegExp(`${linePrefix}<load_knowledge\\b([^>]*?)>([\\s\\S]*?)<\\/load_knowledge>`, 'gim') },
-                { tag: 'update_knowledge', pattern: new RegExp(`${linePrefix}<update_knowledge\\b([^>]*?)>([\\s\\S]*?)<\\/update_knowledge>`, 'gim') },
-                { tag: 'unpack_directory', pattern: new RegExp(`${linePrefix}<unpack_directory\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/unpack_directory>)`, 'gim') },
-                { tag: 'load_structure', pattern: new RegExp(`${linePrefix}<(?:load_structure|read_definitions)\\b([^>]*?)(?:\\/>|>(?:([\\s\\S]*?)<\\/(?:load_structure|read_definitions)>)?)`, 'gim') },
-                { tag: 'show_symbol', pattern: new RegExp(`${linePrefix}<(?:show_symbol|get_symbol_code|read_symbol)\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/(?:show_symbol|get_symbol_code|read_symbol)>)`, 'gim') },
-                { tag: 'peek_files', pattern: new RegExp(`${linePrefix}<peek_files\\b([^>]*?)(?:\\/>|>(?:([\\s\\S]*?)<\\/peek_files>)?)`, 'gim') },
-                { tag: 'read_full_file', pattern: new RegExp(`${linePrefix}<(?:read_full_file|read_file)\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/(?:read_full_file|read_file)>)`, 'gim') },
-                { tag: 'read_external_file', pattern: new RegExp(`${linePrefix}<read_external_file\\b([^>]*?)(?:\\/>|>(?:([\\s\\S]*?)<\\/read_external_file>)?)`, 'gim') },
-                { tag: 'grep', pattern: new RegExp(`${linePrefix}<(?:grep|grep_search|search_files)\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/(?:grep|grep_search|search_files)>)`, 'gim') },
-                { tag: 'manage_symbols', pattern: new RegExp(`${linePrefix}<manage_symbols\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/manage_symbols>)`, 'gim') },
-                { tag: 'query_architecture', pattern: new RegExp(`${linePrefix}<query_architecture\\b([^>]*?)>([\\s\\S]*?)<\\/query_architecture>`, 'gim') },
-                { tag: 'sparql', pattern: new RegExp(`${linePrefix}<sparql\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/sparql>)`, 'gim') },
-                { tag: 'run_tests', pattern: new RegExp(`${linePrefix}<run_tests\\b([^>]*?)(?:\\/>|>(?:([\\s\\S]*?)<\\/run_tests>)?)`, 'gim') },
-                { tag: 'lollms_tool', pattern: new RegExp(`${linePrefix}<lollms_tool\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/lollms_tool>)`, 'gim') },
-                { tag: 'execute_code', pattern: new RegExp(`${linePrefix}<execute_code\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/execute_code>)`, 'gim') }
+                { tag: 'add_files_to_context', pattern: /<add_files_to_context\b([^>]*?)(?:\/>|>([\s\S]*?)<\/add_files_to_context>)/gim },
+                { tag: 'remove_files_from_context', pattern: /<remove_files_from_context\b([^>]*?)(?:\/>|>([\s\S]*?)<\/remove_files_from_context>)/gim },
+                { tag: 'mute_files', pattern: /<mute_files\b([^>]*?)(?:\/>|>([\s\S]*?)<\/mute_files>)/gim },
+                { tag: 'unmute_files', pattern: /<unmute_files\b([^>]*?)(?:\/>|>([\s\S]*?)<\/unmute_files>)/gim },
+                { tag: 'load_knowledge', pattern: /<load_knowledge\b([^>]*?)>([\s\S]*?)<\/load_knowledge>/gim },
+                { tag: 'update_knowledge', pattern: /<update_knowledge\b([^>]*?)>([\s\S]*?)<\/update_knowledge>/gim },
+                { tag: 'unpack_directory', pattern: /<unpack_directory\b([^>]*?)(?:\/>|>([\s\S]*?)<\/unpack_directory>)/gim },
+                { tag: 'load_structure', pattern: /<(?:load_structure|read_definitions)\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/(?:load_structure|read_definitions)>)?)/gim },
+                { tag: 'show_symbol', pattern: /<(?:show_symbol|get_symbol_code|read_symbol)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:show_symbol|get_symbol_code|read_symbol)>)/gim },
+                { tag: 'peek_files', pattern: /<peek_files\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/peek_files>)?)/gim },
+                { tag: 'read_full_file', pattern: /<(?:read_full_file|read_file)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:read_full_file|read_file)>)/gim },
+                { tag: 'read_external_file', pattern: /<read_external_file\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/read_external_file>)?)/gim },
+                { tag: 'grep', pattern: /<(?:grep|grep_search|search_files)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:grep|grep_search|search_files)>)/gim },
+                { tag: 'manage_symbols', pattern: /<manage_symbols\b([^>]*?)(?:\/>|>([\s\S]*?)<\/manage_symbols>)/gim },
+                { tag: 'query_architecture', pattern: /<query_architecture\b([^>]*?)>([\s\S]*?)<\/query_architecture>/gim },
+                { tag: 'sparql', pattern: /<sparql\b([^>]*?)(?:\/>|>([\s\S]*?)<\/sparql>)/gim },
+                { tag: 'run_tests', pattern: /<run_tests\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/run_tests>)?)/gim },
+                { tag: 'lollms_tool', pattern: /<lollms_tool\b([^>]*?)(?:\/>|>([\s\S]*?)<\/lollms_tool>)/gim },
+                { tag: 'execute_code', pattern: /<execute_code\b([^>]*?)(?:\/>|>([\s\S]*?)<\/execute_code>)/gim }
             ].filter(p => {
                 if (p.tag !== 'execute_code') return true;
                 const allowCodeExec = this._discussionCapabilities.allowCodeExecution === true || (this._currentDiscussion?.capabilities as any)?.allowCodeExecution === true;
@@ -5826,8 +5826,17 @@ The user has CONFIRMED and VALIDATED your plan.
             const prefixBufferBeforeTurn = currentFullResponseBuffer.slice(0, Math.max(0, currentFullResponseBuffer.length - turnResponse.length));
             const priorBlockOffsets = countCodeBlocksInBuffer(prefixBufferBeforeTurn);
             const turnBlockCounts = countCodeBlocksInBuffer(scannableTurn);
-            const hasDeleteFilesInTurn = this._discussionCapabilities.fileDelete !== false &&
-                /(?:^[ \t]*|(?<=>)[ \t]*)<(?:delete_files|delete_file)\b/im.test(scannableTurn);
+            const deleteFileCheckRe = /<(?:delete_files|delete_file)\b/gim;
+            let hasDeleteFilesInTurn = false;
+            if (this._discussionCapabilities.fileDelete !== false) {
+                let dfMatch: RegExpExecArray | null;
+                while ((dfMatch = deleteFileCheckRe.exec(scannableTurn)) !== null) {
+                    if (!isIndexInsideFence(dfMatch.index)) {
+                        hasDeleteFilesInTurn = true;
+                        break;
+                    }
+                }
+            }
             const turnHasFileUpdates = turnBlockCounts.xmlCount > 0 || turnBlockCounts.fencedCount > 0 || hasDeleteFilesInTurn;
 
             const lollmsFormRegex = /<lollms_form\b[^>]*>[\s\S]*?<\/lollms_form>/gi;
@@ -6147,10 +6156,10 @@ The user has CONFIRMED and VALIDATED your plan.
                                     const res = await this._contextManager.resolveWorkspaceFromPath(tf);
                                     if (res) {
                                         const defs = await this._contextManager.extractDefinitions(res.uri);
-                                        defsLog.push(`### 📋 Definitions & Signatures for \`${tf}\`:\n\`\`\`typescript\n${defs}\n\`\`\``);
+                                        defsLog.push(`### 📋 Definitions & Signatures for \`${tf}\`:\n${this.wrapInSafeCodeFence(defs, 'typescript')}`);
                                     }
                                 }
-                                toolResult = `Success: Loaded structure & signatures into context for [${targetFiles.join(', ')}].\nNote: Structure is for reference only. Whenever you need full source code or plan to edit these files, privilege using <unmute_files> to upgrade them directly from structure to full code.\n\n${defsLog.join('\n\n')}`;
+                                toolResult = `Success: Loaded structure & signatures into context for [${targetFiles.join(', ')}].\nNote: Structure is for reference only. Whenever you need full source code or plan to edit these files, privilege using \`<unmute_files>\` to upgrade them directly from structure to full code.\n\n${defsLog.join('\n\n')}`;
                                 isSuccess = true;
                                 completedDynamicActions.push(`Loaded structure for ${targetFiles.length} file(s).`);
                             } else {
@@ -6301,7 +6310,7 @@ The user has CONFIRMED and VALIDATED your plan.
                                     try {
                                         const fileBytes = await vscode.workspace.fs.readFile(res.uri);
                                         const text = Buffer.from(fileBytes).toString('utf8');
-                                        toolResult = `### 📄 FULL FILE: \`${reqPath}\` (${text.split('\n').length} lines, ~${Math.ceil(text.length / 3.5)} tokens)\n\`\`\`\n${text}\n\`\`\``;
+                                        toolResult = `### 📄 FULL FILE: \`${reqPath}\` (${text.split('\n').length} lines, ~${Math.ceil(text.length / 3.5)} tokens)\n${this.wrapInSafeCodeFence(text)}`;
                                         isSuccess = true;
                                         completedDynamicActions.push(`Read file: ${reqPath}`);
                                     } catch (e: any) {
@@ -6361,7 +6370,7 @@ The user has CONFIRMED and VALIDATED your plan.
                                 );
                                 if (searchRes.length > 0) {
                                     const snippet = searchRes.slice(0, 15).map(r => `${r.path}:${r.line} - ${r.snippet}`).join('\n');
-                                    toolResult = `### 🔍 GREP RESULTS FOR "${pattern}" (${searchRes.length} hits):\n\`\`\`\n${snippet}\n\`\`\``;
+                                    toolResult = `### 🔍 GREP RESULTS FOR "${pattern}" (${searchRes.length} hits):\n${this.wrapInSafeCodeFence(snippet)}`;
                                     isSuccess = true;
                                     completedDynamicActions.push(`Grepped for: "${pattern}" (${searchRes.length} hits)`);
                                 } else {
@@ -6512,64 +6521,137 @@ The user has CONFIRMED and VALIDATED your plan.
                             if (!codeBody) {
                                 toolResult = "Error: Empty <execute_code> body — nothing to execute.";
                                 isSuccess = false;
+                            } else if (!folders || folders.length === 0) {
+                                toolResult = "🛑 SECURITY VIOLATION: An open workspace folder is required for <execute_code>.";
+                                isSuccess = false;
                             } else {
-                                const { execFile } = require('child_process');
-                                const os = require('os');
-                                const pathMod = require('path');
-                                const fsMod = require('fs');
-                                const stamp = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
-                                let scriptPath = '';
-                                let cmd = '';
-                                let cmdArgs: string[] = [];
-                                let isInlineShell = false;
+                                const workspaceRoots = folders.map(f => f.uri.fsPath);
+                                const secLevel = this.agentManager?.getSecurityLevel?.() || (this._discussionCapabilities.agentSecurityLevel || 'guarded');
+                                const validation = AgentSecurityGuard.validateExecution(codeBody, lang, {
+                                    workspaceRoots,
+                                    level: secLevel
+                                });
 
-                                try {
-                                    if (lang === 'python' || lang === 'python3' || lang === 'py') {
-                                        scriptPath = pathMod.join(os.tmpdir(), `lollms_exec_${stamp}.py`);
-                                        fsMod.writeFileSync(scriptPath, codeBody, 'utf8');
-                                        cmd = process.platform === 'win32' ? 'python' : 'python3';
-                                        cmdArgs = [scriptPath];
-                                    } else if (lang === 'node' || lang === 'nodejs' || lang === 'javascript' || lang === 'js') {
-                                        scriptPath = pathMod.join(os.tmpdir(), `lollms_exec_${stamp}.js`);
-                                        fsMod.writeFileSync(scriptPath, codeBody, 'utf8');
-                                        cmd = 'node';
-                                        cmdArgs = [scriptPath];
-                                    } else {
-                                        // shell / bash / powershell / cmd / plaintext fallback
-                                        cmd = process.platform === 'win32' ? 'powershell' : 'bash';
-                                        if (process.platform === 'win32') {
-                                            cmdArgs = ['-NoProfile', '-NonInteractive', '-Command', codeBody];
-                                            isInlineShell = true;
+                                let executionPermitted = validation.allowed;
+                                let denyReason = validation.reason;
+
+                                // If shell invokes a workspace script file (e.g. python foo.py / node bar.js / bash run.sh), scan its content too
+                                if (validation.decision !== 'block') {
+                                    const scriptInvokeMatch = codeBody.match(/\b(?:python3?|node|bash|sh|pwsh|powershell)\s+([^\r\n;&|]+\.(?:py|js|mjs|cjs|ts|sh|ps1))\b/i);
+                                    if (scriptInvokeMatch) {
+                                        const candidateScript = scriptInvokeMatch[1].trim().replace(/^['"]|['"]$/g, '');
+                                        const pathCheck = AgentSecurityGuard.validateWorkspacePath(candidateScript, folders[0]);
+                                        if (!pathCheck.valid) {
+                                            executionPermitted = false;
+                                            denyReason = pathCheck.reason || 'Script path outside workspace.';
                                         } else {
-                                            scriptPath = pathMod.join(os.tmpdir(), `lollms_exec_${stamp}.sh`);
-                                            fsMod.writeFileSync(scriptPath, codeBody, 'utf8');
-                                            cmdArgs = [scriptPath];
+                                            const resolved = await this._contextManager.resolveWorkspaceFromPath(candidateScript);
+                                            if (resolved) {
+                                                try {
+                                                    const bytes = await vscode.workspace.fs.readFile(resolved.uri);
+                                                    const scriptText = Buffer.from(bytes).toString('utf8');
+                                                    const scriptScan = AgentSecurityGuard.analyzeScriptContent(scriptText, resolved.relativePath, secLevel, workspaceRoots);
+                                                    if (scriptScan.decision === 'block') {
+                                                        executionPermitted = false;
+                                                        denyReason = scriptScan.reason;
+                                                    } else if (scriptScan.decision === 'confirm' && validation.decision === 'allow') {
+                                                        validation.decision = 'confirm';
+                                                        denyReason = scriptScan.reason;
+                                                    }
+                                                } catch {}
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (validation.decision === 'block' || (!executionPermitted && validation.decision !== 'confirm')) {
+                                    toolResult = `🛑 SECURITY VIOLATION: Execution blocked.\nReason: ${denyReason}`;
+                                    isSuccess = false;
+                                    completedDynamicActions.push(`Blocked unsafe ${lang} execution: ${denyReason}`);
+                                } else {
+                                    if (validation.decision === 'confirm') {
+                                        const choice = await vscode.window.showWarningMessage(
+                                            `🛡️ Confirm <execute_code lang="${lang}">: ${denyReason}`,
+                                            { modal: true },
+                                            'Allow Once',
+                                            'Block'
+                                        );
+                                        executionPermitted = choice === 'Allow Once';
+                                        if (!executionPermitted) {
+                                            toolResult = `🛑 SECURITY BLOCK: Execution cancelled by user (${denyReason}).`;
+                                            isSuccess = false;
+                                            completedDynamicActions.push(`User blocked ${lang} execution.`);
                                         }
                                     }
 
-                                    const execRes = await new Promise<{ stdout: string; stderr: string; code: number }>((resolve) => {
-                                        execFile(cmd, cmdArgs, { cwd: folders?.[0]?.uri.fsPath, encoding: 'utf8', timeout: 60000, maxBuffer: 1024 * 1024 }, (err: any, stdout: string, stderr: string) => {
-                                            resolve({ stdout: stdout || '', stderr: stderr || '', code: err ? (typeof err.code === 'number' ? err.code : 1) : 0 });
-                                        });
-                                    });
+                                    if (executionPermitted) {
+                                        const { execFile } = require('child_process');
+                                        const pathMod = require('path');
+                                        const fsMod = require('fs');
+                                        const tempDir = pathMod.join(folders[0].uri.fsPath, '.lollms', 'temp_scripts');
+                                        if (!fsMod.existsSync(tempDir)) {
+                                            fsMod.mkdirSync(tempDir, { recursive: true });
+                                        }
+                                        const stamp = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+                                        let scriptPath = '';
+                                        let cmd = '';
+                                        let cmdArgs: string[] = [];
+                                        let isInlineShell = false;
 
-                                    const trim = (s: string, n: number) => {
-                                        if (s.length <= n) return s;
-                                        const head = Math.floor(n * 0.2);
-                                        const tail = n - head;
-                                        return s.slice(0, head) + `\n... [${s.length - n} chars truncated] ...\n` + s.slice(s.length - tail);
-                                    };
-                                    const out = trim(execRes.stdout, 20000);
-                                    const errOut = trim(execRes.stderr, 6000);
-                                    isSuccess = execRes.code === 0;
-                                    toolResult = `### ⚡ EXECUTE_CODE (${lang}) — Exit Code: ${execRes.code}\n**stdout:**\n\`\`\`\n${out || '(empty)'}\n\`\`\`\n${errOut ? `**stderr:**\n\`\`\`\n${errOut}\n\`\`\`\n` : ''}`;
-                                    completedDynamicActions.push(`Executed ${lang} code (exit ${execRes.code}).`);
-                                } catch (execErr: any) {
-                                    toolResult = `Error executing <execute_code lang="${lang}">: ${execErr.message}`;
-                                    isSuccess = false;
-                                    completedDynamicActions.push(`Crashed executing ${lang} code.`);
-                                } finally {
-                                    try { if (scriptPath && !isInlineShell && fsMod.existsSync(scriptPath)) fsMod.unlinkSync(scriptPath); } catch {}
+                                        try {
+                                            if (lang === 'python' || lang === 'python3' || lang === 'py') {
+                                                scriptPath = pathMod.join(tempDir, `lollms_exec_${stamp}.py`);
+                                                fsMod.writeFileSync(scriptPath, codeBody, 'utf8');
+                                                cmd = process.platform === 'win32' ? 'python' : 'python3';
+                                                cmdArgs = [scriptPath];
+                                            } else if (lang === 'node' || lang === 'nodejs' || lang === 'javascript' || lang === 'js') {
+                                                scriptPath = pathMod.join(tempDir, `lollms_exec_${stamp}.js`);
+                                                fsMod.writeFileSync(scriptPath, codeBody, 'utf8');
+                                                cmd = 'node';
+                                                cmdArgs = [scriptPath];
+                                            } else {
+                                                cmd = process.platform === 'win32' ? 'powershell' : 'bash';
+                                                if (process.platform === 'win32') {
+                                                    cmdArgs = ['-NoProfile', '-NonInteractive', '-Command', codeBody];
+                                                    isInlineShell = true;
+                                                } else {
+                                                    scriptPath = pathMod.join(tempDir, `lollms_exec_${stamp}.sh`);
+                                                    fsMod.writeFileSync(scriptPath, codeBody, 'utf8');
+                                                    cmdArgs = [scriptPath];
+                                                }
+                                            }
+
+                                            const execRes = await new Promise<{ stdout: string; stderr: string; code: number }>((resolve) => {
+                                                execFile(cmd, cmdArgs, { cwd: folders[0].uri.fsPath, encoding: 'utf8', timeout: 60000, maxBuffer: 1024 * 1024 }, (err: any, stdout: string, stderr: string) => {
+                                                    resolve({ stdout: stdout || '', stderr: stderr || '', code: err ? (typeof err.code === 'number' ? err.code : 1) : 0 });
+                                                });
+                                            });
+
+                                            const trim = (s: string, n: number) => {
+                                                if (s.length <= n) return s;
+                                                const head = Math.floor(n * 0.2);
+                                                const tail = n - head;
+                                                return s.slice(0, head) + `\n... [${s.length - n} chars truncated] ...\n` + s.slice(s.length - tail);
+                                            };
+                                            const rawOut = trim(execRes.stdout, 20000);
+                                            const rawErr = trim(execRes.stderr, 6000);
+
+                                            const outGate = await ContextPoisoningGate.sanitizeExecutionOutput(rawOut, `execute_code://${lang}/stdout`, { signal: controller.signal });
+                                            const errGate = await ContextPoisoningGate.sanitizeExecutionOutput(rawErr, `execute_code://${lang}/stderr`, { signal: controller.signal });
+
+                                            const out = outGate.sanitizedOutput;
+                                            const errOut = errGate.sanitizedOutput;
+                                            isSuccess = execRes.code === 0 && !outGate.blocked && !errGate.blocked;
+                                            toolResult = `### ⚡ EXECUTE_CODE (${lang}) — Exit Code: ${execRes.code}\n**stdout:**\n${this.wrapInSafeCodeFence(out || '(empty)')}\n${errOut ? `**stderr:**\n${this.wrapInSafeCodeFence(errOut)}\n` : ''}`;
+                                            completedDynamicActions.push(`Executed ${lang} code (exit ${execRes.code}).`);
+                                        } catch (execErr: any) {
+                                            toolResult = `Error executing <execute_code lang="${lang}">: ${execErr.message}`;
+                                            isSuccess = false;
+                                            completedDynamicActions.push(`Crashed executing ${lang} code.`);
+                                        } finally {
+                                            try { if (scriptPath && !isInlineShell && fsMod.existsSync(scriptPath)) fsMod.unlinkSync(scriptPath); } catch {}
+                                        }
+                                    }
                                 }
                             }
                         } else if (action.tag === 'lollms_tool') {
@@ -6663,10 +6745,9 @@ The user has CONFIRMED and VALIDATED your plan.
 
                     const summaryColor = isSuccess ? '' : 'color:var(--vscode-charts-red);';
                     const headerPrefix = isSuccess ? 'Action Complete' : 'Action Failed';
-                    // Escape container HTML tags inside tool output so raw </details>/</div>/<file>/<think> never break the processing-block DOM
-                    const safeToolResult = String(toolResult || '').replace(/<\/?(?:details|div|summary|file|think|thinking|thought|analysis|reasoning)\b[^>]*>/gi, (m) =>
-                        m.replace(/</g, '&lt;').replace(/>/g, '&gt;')
-                    );
+                    const safeToolResult = this.formatSafeToolResult(toolResult);
+                    const escSummary = (s: string) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    const safeToolDisplayName = escSummary(toolDisplayName);
                     let blockWidgetHtml = "";
 
                     if (action.tag === 'add_files_to_context') {
@@ -6705,17 +6786,19 @@ The user has CONFIRMED and VALIDATED your plan.
                     } else if (action.tag === 'run_tests') {
                         blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-beaker"></i> ${isSuccess ? 'Tests Passed' : 'Tests Failed'}: ${toolDisplayName}</summary><div class="processing-body">${safeToolResult}</div></details>\n\n`;
                     } else {
-                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-tools"></i> ${headerPrefix}: ${toolDisplayName}</summary><div class="processing-body">**Output:**\n${safeToolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-tools"></i> ${headerPrefix}: ${safeToolDisplayName}</summary><div class="processing-body">**Output:**\n${safeToolResult}</div></details>
+
+\n\n`;
                     }
 
                     // Ensure any dangling unclosed code fence or think tag from turnResponse does not swallow blockWidgetHtml
-                    const fenceCount = (currentFullResponseBuffer.match(/^[ \t]*```/gm) || []).length;
-                    if (fenceCount % 2 !== 0) {
-                        currentFullResponseBuffer += '\n```\n';
+                    const danglingFence = this.findUnclosedMarkdownFence(aIdx === 0 ? turnResponse : '');
+                    if (danglingFence) {
+                        currentFullResponseBuffer += `\n${danglingFence.char.repeat(danglingFence.len)}\n`;
                     }
-                    const openThinkMatches = currentFullResponseBuffer.match(/<(think|thinking|thought|analysis|reasoning)\b[^>]*>/gi) || [];
-                    const closeThinkMatches = currentFullResponseBuffer.match(/<\/(think|thinking|thought|analysis|reasoning)>/gi) || [];
-                    if (openThinkMatches.length > closeThinkMatches.length) {
+                    const openThinkMatches = turnResponse.match(/<(think|thinking|thought|analysis|reasoning)\b[^>]*>/gi) || [];
+                    const closeThinkMatches = turnResponse.match(/<\/(think|thinking|thought|analysis|reasoning)>/gi) || [];
+                    if (aIdx === 0 && openThinkMatches.length > closeThinkMatches.length) {
                         currentFullResponseBuffer += '\n</think>\n';
                     }
 
@@ -7218,29 +7301,8 @@ ${phaseSigs}${phaseTargets}> 🎯 **Instructions for Implementation**:
         if (controller?.signal.aborted || error.name === 'AbortError' || error.message === 'AbortError' || error.message === 'Operation cancelled') {
             const accumulated = fullResponse.trim() ? fullResponse : currentFullResponseBuffer;
             if (accumulated.trim()) {
-                // Auto-close any unclosed <file> tags, Aider hunks, and markdown code blocks so Apply All / Execute All render cleanly
-                let closedResponse = accumulated;
-                const lastSearchIdx = closedResponse.lastIndexOf('<<<<<<< SEARCH');
-                const lastReplaceIdx = closedResponse.lastIndexOf('>>>>>>> REPLACE');
-                if (lastSearchIdx !== -1 && lastSearchIdx > lastReplaceIdx) {
-                    const lastSepIdx = closedResponse.lastIndexOf('=======');
-                    if (lastSepIdx < lastSearchIdx) {
-                        closedResponse += '\n=======\n';
-                    }
-                    closedResponse += '\n>>>>>>> REPLACE';
-                }
-
-                const fileOpenCount = (closedResponse.match(/<file\b[^>]*>/gi) || []).length;
-                const fileCloseCount = (closedResponse.match(/<\/file>/gi) || []).length;
-                if (fileOpenCount > fileCloseCount) {
-                    closedResponse += '\n<' + '/file>';
-                }
-
-                // Check for unclosed markdown code fences
-                const fenceMatches = closedResponse.match(/```/g) || [];
-                if (fenceMatches.length % 2 !== 0) {
-                    closedResponse += '\n```';
-                }
+                // Auto-close any unclosed tags, Aider hunks, and markdown code fences so Apply All / Execute All render cleanly
+                const closedResponse = this.repairAndNormalizeRoundOutput(accumulated).repaired.trimEnd();
 
                 const stoppedText = closedResponse + "\n\n*(Generation stopped by user)*";
                 const targetMsgId = assistantMessageId || ('assistant_' + Date.now());
@@ -8263,7 +8325,8 @@ ${res.output || '(No output recorded)'}
 
   public async processStructureTags(content: string): Promise<string[]> {
       if (!content) return [];
-      const structRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<(?:load_structure|read_definitions)\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/(?:load_structure|read_definitions)>)?)/gim;
+      const scanContent = this.stripProtectedRegionsForTagScan(content);
+      const structRegex = /<(?:load_structure|read_definitions)\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/(?:load_structure|read_definitions)>)?)/gim;
       const targetPaths: string[] = [];
       const addTarget = (p: string) => {
           const clean = p.trim().replace(/^['"`]|['"`]$/g, '').replace(/^-\s*/, '').trim();
@@ -8271,7 +8334,7 @@ ${res.output || '(No output recorded)'}
       };
 
       let structMatch: RegExpExecArray | null;
-      while ((structMatch = structRegex.exec(content)) !== null) {
+      while ((structMatch = structRegex.exec(scanContent)) !== null) {
           const attrStr = structMatch[1] || "";
           const inner = (structMatch[2] || "").trim();
 
@@ -8321,11 +8384,12 @@ ${res.output || '(No output recorded)'}
 
   public async processKnowledgeUpdates(content: string): Promise<void> {
       if (!content) return;
+      const scanContent = this.stripProtectedRegionsForTagScan(content);
       const updateKnRegex = /<update_knowledge\b([^>]*?)>([\s\S]*?)<\/update_knowledge>/gi;
       let match: RegExpExecArray | null;
       let updatedAny = false;
 
-      while ((match = updateKnRegex.exec(content)) !== null) {
+      while ((match = updateKnRegex.exec(scanContent)) !== null) {
           const attrStr = match[1] || "";
           const innerContent = match[2].trim();
           if (!innerContent) continue;
@@ -8343,7 +8407,7 @@ ${res.output || '(No output recorded)'}
       }
 
       const structRegex = /<(?:structure|findings|update_findings)\b([^>]*?)>([\s\S]*?)<\/(?:structure|findings|update_findings)>/gi;
-      while ((match = structRegex.exec(content)) !== null) {
+      while ((match = structRegex.exec(scanContent)) !== null) {
           const attrStr = match[1] || "";
           const inner = match[2].trim();
           if (inner) {
@@ -13445,6 +13509,739 @@ ${itemizedReports.join('\n\n---\n\n')}
     });
   }
 
+  private wrapInSafeCodeFence(content: string, lang: string = ''): string {
+      const text = String(content || '');
+      const matches = text.match(/`{3,}/g) || [];
+      let maxTicks = 2;
+      for (const m of matches) {
+          if (m.length > maxTicks) maxTicks = m.length;
+      }
+      const fence = '`'.repeat(maxTicks + 1);
+      return `${fence}${lang}\n${text}\n${fence}`;
+  }
+
+  private findUnclosedMarkdownFence(text: string): { char: string; len: number } | null {
+      if (!text) return null;
+      const lines = text.split(/\r?\n/);
+      let openFence: { char: string; len: number } | null = null;
+      for (const line of lines) {
+          const fm = line.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+          if (!fm) continue;
+          const marker = fm[1];
+          const ch = marker[0];
+          const len = marker.length;
+          const trailing = fm[2] || '';
+          if (openFence) {
+              if (ch === openFence.char && len >= openFence.len && trailing.trim() === '') {
+                  openFence = null;
+              }
+          } else {
+              const isInline = ch === '`' && trailing.includes(marker);
+              if (!isInline) {
+                  openFence = { char: ch, len };
+              }
+          }
+      }
+      return openFence;
+  }
+
+  private formatSafeToolResult(rawResult: string): string {
+      let escaped = String(rawResult || '').replace(
+          /<\/?(?:details|div|summary|script|style|iframe|pre|textarea|xmp|file|delete_code|delete_file|delete_files|think|thinking|thought|analysis|reasoning|lollms_tool|lollms_form|form|execute_code|add_files_to_context|remove_files_from_context|mute_files|unmute_files|load_structure|read_definitions|show_symbol|get_symbol_code|read_symbol|manage_symbols|unpack_directory|peek_files|read_full_file|read_file|read_external_file|grep|grep_search|search_files|sparql|query_architecture|run_tests|load_knowledge|update_knowledge|record_insight|add_insight|mission_briefing|user_instruction|plan|findings|phase|instruction|files_list|agent_round|milestone|project_memory)\b[^>]*>?/gi,
+          (m) => m.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      );
+
+      // Ensure any code fence opened inside tool output is properly closed before closing </details>
+      const openFence = this.findUnclosedMarkdownFence(escaped);
+      if (openFence) {
+          escaped = `${escaped}\n${openFence.char.repeat(openFence.len)}`;
+      }
+
+      // Close any unclosed HTML comments so they cannot swallow </div></details>
+      const openComments = (escaped.match(/<!--/g) || []).length;
+      const closeComments = (escaped.match(/-->/g) || []).length;
+      if (openComments > closeComments) {
+          escaped = `${escaped}\n-->`;
+      }
+
+      return escaped;
+  }
+
+  private findMatchingInlineBacktickEndInLine(line: string, startInLine: number): number {
+      let tickCount = 0;
+      while (startInLine + tickCount < line.length && line[startInLine + tickCount] === '`') {
+          tickCount++;
+      }
+      if (tickCount === 0) return -1;
+      let i = startInLine + tickCount;
+      while (i < line.length) {
+          if (line[i] === '`') {
+              let closeCount = 0;
+              while (i + closeCount < line.length && line[i + closeCount] === '`') {
+                  closeCount++;
+              }
+              if (closeCount === tickCount) {
+                  return i + closeCount;
+              }
+              i += closeCount;
+          } else {
+              i++;
+          }
+      }
+      return -1;
+  }
+
+  private getProtectedContentRanges(text: string, options?: { keepToolWrapperFences?: boolean }): { start: number; end: number }[] {
+      const ranges: { start: number; end: number }[] = [];
+      if (!text) return ranges;
+
+      // 1. Protect closed <file> mutation blocks
+      const extractedFiles = extractFileBlocks(text);
+      for (const fb of extractedFiles) {
+          if (fb.isClosed) {
+              ranges.push({ start: fb.start, end: fb.end });
+          }
+      }
+
+      // 2. Protect <details class="processing-block">...</details> using balanced depth counting
+      const procOpenRegex = /<details\b[^>]*\bclass=["'][^"']*\bprocessing-block\b[^"']*["'][^>]*>/gi;
+      let pm: RegExpExecArray | null;
+      while ((pm = procOpenRegex.exec(text)) !== null) {
+          const pStart = pm.index;
+          if (ranges.some(r => pStart >= r.start && pStart < r.end)) continue;
+          const tagFinder = /<\/?details\b[^>]*>/gi;
+          tagFinder.lastIndex = pStart + pm[0].length;
+          let depth = 1;
+          let pEnd = text.length;
+          let tm: RegExpExecArray | null;
+          while ((tm = tagFinder.exec(text)) !== null) {
+              if (tm[0].toLowerCase().startsWith('</')) {
+                  depth--;
+                  if (depth === 0) {
+                      pEnd = tm.index + tm[0].length;
+                      break;
+                  }
+              } else {
+                  depth++;
+              }
+          }
+          ranges.push({ start: pStart, end: pEnd });
+          procOpenRegex.lastIndex = pEnd;
+      }
+
+      const isAlreadyProtected = (offset: number) => ranges.some(r => offset >= r.start && offset < r.end);
+
+      // 3. Protect fenced code blocks (matching variable-length backtick/tilde fences outside <file>/processing-block)
+      //    and inline backticks
+      const toolTagNamesPattern = /^(?:add_files_to_context|remove_files_from_context|mute_files|unmute_files|load_knowledge|update_knowledge|unpack_directory|load_structure|read_definitions|show_symbol|get_symbol_code|read_symbol|peek_files|read_full_file|read_file|read_external_file|grep|grep_search|search_files|manage_symbols|query_architecture|sparql|run_tests|lollms_tool|execute_code|lollms_form)\b/i;
+      let openFence: { start: number; bodyStart: number; char: string; len: number; langHint: string } | null = null;
+
+      let lineStart = 0;
+      const len = text.length;
+      while (lineStart < len) {
+          let nlIdx = text.indexOf('\n', lineStart);
+          const nextLineStart = nlIdx === -1 ? len : nlIdx + 1;
+          const lineEnd = (nlIdx === -1 ? len : nlIdx) - (nlIdx > lineStart && text[nlIdx - 1] === '\r' ? 1 : 0);
+          const lineText = text.slice(lineStart, lineEnd);
+
+          if (!openFence && isAlreadyProtected(lineStart)) {
+              lineStart = nextLineStart;
+              continue;
+          }
+
+          const fm = lineText.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+          if (openFence) {
+              if (fm && fm[1][0] === openFence.char && fm[1].length >= openFence.len && (fm[2] || '').trim() === '') {
+                  const innerTrim = text.slice(openFence.bodyStart, lineStart).trim();
+                  const isToolWrapperFence = options?.keepToolWrapperFences &&
+                      (!openFence.langHint || ['xml', 'tool', 'tools', 'sparql'].includes(openFence.langHint)) &&
+                      innerTrim.startsWith('<') &&
+                      toolTagNamesPattern.test(innerTrim.substring(1));
+                  if (!isToolWrapperFence) {
+                      ranges.push({ start: openFence.start, end: nextLineStart });
+                  }
+                  openFence = null;
+              }
+              lineStart = nextLineStart;
+              continue;
+          }
+
+          if (fm) {
+              const marker = fm[1];
+              const ch = marker[0];
+              const mLen = marker.length;
+              const trailing = (fm[2] || '').trim();
+              const isInline = ch === '`' && trailing.includes(marker);
+              if (!isInline) {
+                  openFence = {
+                      start: lineStart,
+                      bodyStart: nextLineStart,
+                      char: ch,
+                      len: mLen,
+                      langHint: trailing.toLowerCase()
+                  };
+                  lineStart = nextLineStart;
+                  continue;
+              }
+          }
+
+          let col = 0;
+          while (col < lineText.length) {
+              if (lineText[col] === '`') {
+                  const endCol = this.findMatchingInlineBacktickEndInLine(lineText, col);
+                  if (endCol !== -1) {
+                      ranges.push({ start: lineStart + col, end: lineStart + endCol });
+                      col = endCol;
+                      continue;
+                  }
+              }
+              col++;
+          }
+
+          lineStart = nextLineStart;
+      }
+
+      if (openFence) {
+          ranges.push({ start: openFence.start, end: len });
+      }
+
+      return ranges;
+  }
+
+  private stripProtectedRegionsForTagScan(text: string): string {
+      if (!text) return '';
+      const stripped = stripThinkingTags(text);
+      const ranges = this.getProtectedContentRanges(stripped, { keepToolWrapperFences: false });
+      if (ranges.length === 0) return stripped;
+
+      // Sort and merge overlapping ranges, then blank them out with spaces to preserve positions/newlines
+      const sorted = [...ranges].sort((a, b) => a.start - b.start);
+      const merged: { start: number; end: number }[] = [];
+      for (const r of sorted) {
+          const last = merged[merged.length - 1];
+          if (last && r.start <= last.end) {
+              last.end = Math.max(last.end, r.end);
+          } else {
+              merged.push({ ...r });
+          }
+      }
+
+      let out = '';
+      let cursor = 0;
+      for (const r of merged) {
+          out += stripped.slice(cursor, r.start);
+          out += '\n';
+          cursor = r.end;
+      }
+      out += stripped.slice(cursor);
+      return out;
+  }
+
+  private findXmlTagCloseAngle(line: string, startCol: number): number {
+      let quote: '"' | "'" | null = null;
+      for (let i = startCol; i < line.length; i++) {
+          const ch = line[i];
+          if (quote) {
+              if (ch === quote) quote = null;
+          } else if (ch === '"' || ch === "'") {
+              quote = ch;
+          } else if (ch === '>') {
+              return i;
+          }
+      }
+      return -1;
+  }
+
+  private repairAndNormalizeRoundOutput(rawTurn: string): { repaired: string; wasRepaired: boolean; repairs: string[] } {
+      if (!rawTurn) return { repaired: rawTurn, wasRepaired: false, repairs: [] };
+
+      const normalizedInput = rawTurn.replace(/\r\n/g, '\n');
+      const repairs: string[] = [];
+      let wasRepaired = false;
+
+      const THINK_TAGS = new Set(['think', 'thinking', 'thought', 'analysis', 'reasoning']);
+      const OPAQUE_FILE_TAGS = new Set(['file', 'delete_code']);
+      const OPAQUE_CODE_TAGS = new Set(['execute_code']);
+      const PLAN_CHILD_TAGS = new Set(['findings', 'phase', 'instruction', 'files_list']);
+      const REQUIRE_ATTR_OR_CLOSE = new Set([
+          'add_files_to_context', 'remove_files_from_context', 'mute_files', 'unmute_files',
+          'load_structure', 'read_definitions', 'show_symbol', 'get_symbol_code', 'read_symbol',
+          'manage_symbols', 'unpack_directory', 'peek_files', 'read_full_file', 'read_file',
+          'read_external_file', 'grep', 'grep_search', 'search_files', 'sparql', 'query_architecture',
+          'run_tests', 'load_knowledge', 'update_knowledge', 'record_insight', 'add_insight',
+          'mission_briefing', 'delete_files', 'delete_file', 'lollms_tool', 'lollms_form',
+          'user_instruction', 'plan', 'milestone', 'project_memory', 'execute_code'
+      ]);
+      const ALL_TRACKED_TAGS = new Set<string>([
+          ...THINK_TAGS,
+          ...OPAQUE_FILE_TAGS,
+          ...OPAQUE_CODE_TAGS,
+          ...PLAN_CHILD_TAGS,
+          ...REQUIRE_ATTR_OR_CLOSE,
+          'form',
+          'details'
+      ]);
+
+      const lines = normalizedInput.split('\n');
+      const outLines: string[] = [];
+
+      let activeFence: { char: string; len: number } | null = null;
+      let inAiderHunk: 'search' | 'replace' | null = null;
+      const tagStack: { name: string }[] = [];
+      let sawAnyThinkInRound = false;
+      let prependOpenThink = false;
+
+      const getTopTag = (): string | null => (tagStack.length > 0 ? tagStack[tagStack.length - 1].name : null);
+      const isOpaqueTop = (): boolean => {
+          const top = getTopTag();
+          return !!top && (OPAQUE_FILE_TAGS.has(top) || OPAQUE_CODE_TAGS.has(top) || THINK_TAGS.has(top));
+      };
+
+      const isValidFileTagAttr = (attrStr: string): boolean => {
+          const attrs = parseFileTagAttributes(attrStr);
+          if (!attrs || !attrs.path || !isValidFilePath(attrs.path)) return false;
+          const clean = attrs.path.replace(/\\/g, '/').toLowerCase().trim();
+          return clean !== '...' && clean !== 'path/to/file.ext' && !clean.startsWith('path/to/') && clean !== 'path/to/obsolete_file.ext';
+      };
+
+      const isToolWrapperFenceAt = (lineIdx: number, langHint: string): boolean => {
+          const top = getTopTag();
+          if (top && (OPAQUE_FILE_TAGS.has(top) || THINK_TAGS.has(top) || OPAQUE_CODE_TAGS.has(top))) return false;
+          for (let j = lineIdx + 1; j < lines.length; j++) {
+              const trimmed = lines[j].trim();
+              if (!trimmed) continue;
+              const fm = trimmed.match(/^<file\s+([^>]*?)>/i);
+              if (fm && isValidFileTagAttr(fm[1] || '')) return true;
+              const tm = trimmed.match(/^<([a-zA-Z_][a-zA-Z0-9_]*)\b/);
+              if (tm && (!langHint || ['xml', 'tool', 'tools', 'sparql', 'form', 'lollms_form'].includes(langHint.toLowerCase()))) {
+                  if (REQUIRE_ATTR_OR_CLOSE.has(tm[1].toLowerCase())) return true;
+              }
+              return false;
+          }
+          return false;
+      };
+
+      for (let li = 0; li < lines.length; li++) {
+          let lineText = lines[li];
+          const top = getTopTag();
+
+          // 1. Inside an active fenced code block
+          if (activeFence) {
+              const cf = lineText.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+              if (cf && cf[1][0] === activeFence.char && cf[1].length >= activeFence.len) {
+                  const trailing = cf[2] || '';
+                  if (trailing.trim() === '') {
+                      activeFence = null;
+                      outLines.push(lineText);
+                      continue;
+                  }
+                  if (top && OPAQUE_FILE_TAGS.has(top) && new RegExp(`^[ \\t]*<\\/\\s*${top}\\b`, 'i').test(trailing)) {
+                      activeFence = null;
+                      const splitIdx = lineText.indexOf(trailing);
+                      outLines.push(lineText.slice(0, splitIdx).trimEnd());
+                      lineText = trailing.trimStart();
+                      wasRepaired = true;
+                      repairs.push(`Separated </${top}> from closing fence`);
+                  } else {
+                      outLines.push(lineText);
+                      continue;
+                  }
+              } else if (top && (OPAQUE_FILE_TAGS.has(top) || OPAQUE_CODE_TAGS.has(top)) && new RegExp(`^[ \\t]*<\\/\\s*${top}\\s*>[ \\t]*$`, 'i').test(lineText)) {
+                  // Model opened a fence inside <file> or <execute_code> and closed  </file> without closing the fence
+                  outLines.push(activeFence.char.repeat(activeFence.len));
+                  activeFence = null;
+                  wasRepaired = true;
+                  repairs.push(`Closed unclosed inner code fence before </${top}>`);
+              } else {
+                  outLines.push(lineText);
+                  continue;
+              }
+          }
+
+          // 2. Check for opening code fence at line start
+          const ofMatch = lineText.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+          if (ofMatch) {
+              const marker = ofMatch[1];
+              const ch = marker[0];
+              const mLen = marker.length;
+              const trailing = (ofMatch[2] || '').trim();
+              const isInline = ch === '`' && trailing.includes(marker);
+              if (!isInline && !isToolWrapperFenceAt(li, trailing)) {
+                  activeFence = { char: ch, len: mLen };
+                  outLines.push(lineText);
+                  continue;
+              }
+          }
+
+          // 3. Track Aider markers inside <file> / <delete_code>
+          if (top && OPAQUE_FILE_TAGS.has(top)) {
+              const trimmed = lineText.trim();
+              if (/^<{7}\s*search\b/i.test(trimmed)) {
+                  if (inAiderHunk === 'search') {
+                      outLines.push('=======', '', '>>>>>>> REPLACE');
+                      wasRepaired = true;
+                      repairs.push('Closed incomplete Aider SEARCH hunk before next SEARCH');
+                  } else if (inAiderHunk === 'replace') {
+                      outLines.push('>>>>>>> REPLACE');
+                      wasRepaired = true;
+                      repairs.push('Closed incomplete Aider REPLACE hunk before next SEARCH');
+                  }
+                  inAiderHunk = 'search';
+                  outLines.push(lineText);
+                  continue;
+              }
+              if (/^={7,}[ \t]*$/.test(trimmed) && inAiderHunk === 'search') {
+                  inAiderHunk = 'replace';
+                  outLines.push(lineText);
+                  continue;
+              }
+              if (/^>{7}\s*replace\b/i.test(trimmed)) {
+                  if (inAiderHunk === 'search') {
+                      outLines.push('=======', '');
+                      wasRepaired = true;
+                      repairs.push('Inserted missing ======= separator before >>>>>>> REPLACE');
+                  }
+                  inAiderHunk = null;
+                  outLines.push(lineText);
+                  continue;
+              }
+          }
+
+          // 4. Scan columns on lineText
+          let rebuilt = '';
+          let col = 0;
+          let seenNonWs = false;
+          let inSingleQuote = false;
+          let inDoubleQuote = false;
+
+          while (col < lineText.length) {
+              const ch = lineText[col];
+              const curTop = getTopTag();
+
+              if (curTop && OPAQUE_FILE_TAGS.has(curTop)) {
+                  // Track basic quote state only for mid-line </file> safety
+                  if (ch === '\\' && (inSingleQuote || inDoubleQuote) && col + 1 < lineText.length) {
+                      rebuilt += lineText.slice(col, col + 2);
+                      col += 2;
+                      seenNonWs = true;
+                      continue;
+                  }
+                  if (ch === '"' && !inSingleQuote) {
+                      inDoubleQuote = !inDoubleQuote;
+                      rebuilt += ch;
+                      col++;
+                      seenNonWs = true;
+                      continue;
+                  }
+                  if (ch === "'" && !inDoubleQuote) {
+                      inSingleQuote = !inSingleQuote;
+                      rebuilt += ch;
+                      col++;
+                      seenNonWs = true;
+                      continue;
+                  }
+              }
+
+              if (ch === '`') {
+                  const endCol = this.findMatchingInlineBacktickEndInLine(lineText, col);
+                  if (endCol !== -1) {
+                      rebuilt += lineText.slice(col, endCol);
+                      col = endCol;
+                      seenNonWs = true;
+                      continue;
+                  }
+                  rebuilt += ch;
+                  col++;
+                  seenNonWs = true;
+                  continue;
+              }
+
+              if (ch === '<') {
+                  const slice = lineText.slice(col);
+
+                  // 4A. Closing tag </name>
+                  const closeM = slice.match(/^<\/\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*>/);
+                  if (closeM) {
+                      const rawCloseName = closeM[1];
+                      const closeName = rawCloseName.toLowerCase();
+                      const closeLen = closeM[0].length;
+
+                      if (curTop && OPAQUE_FILE_TAGS.has(curTop)) {
+                          const canCloseFile = closeName === curTop && (!seenNonWs || (!inSingleQuote && !inDoubleQuote && lineText.slice(col + closeLen).trim() === ''));
+                          if (canCloseFile) {
+                              if (inAiderHunk === 'search') {
+                                  rebuilt += '\n=======\n\n>>>>>>> REPLACE';
+                                  inAiderHunk = null;
+                                  wasRepaired = true;
+                                  repairs.push(`Closed incomplete Aider SEARCH hunk before </${curTop}>`);
+                              } else if (inAiderHunk === 'replace') {
+                                  rebuilt += '\n>>>>>>> REPLACE';
+                                  inAiderHunk = null;
+                                  wasRepaired = true;
+                                  repairs.push(`Closed incomplete Aider REPLACE hunk before </${curTop}>`);
+                              }
+                              tagStack.pop();
+                              if (seenNonWs) {
+                                  rebuilt += `\n</${curTop}>`;
+                                  wasRepaired = true;
+                                  repairs.push(`Moved </${curTop}> onto its own line`);
+                              } else {
+                                  rebuilt += `</${curTop}>`;
+                              }
+                              col += closeLen;
+                              if (lineText.slice(col).trim().length > 0) {
+                                  rebuilt += '\n';
+                                  wasRepaired = true;
+                              }
+                              seenNonWs = true;
+                              continue;
+                          }
+                      } else if (curTop && OPAQUE_CODE_TAGS.has(curTop)) {
+                          if (closeName === curTop) {
+                              tagStack.pop();
+                              if (seenNonWs) {
+                                  rebuilt += `\n</${curTop}>`;
+                                  wasRepaired = true;
+                                  repairs.push(`Moved </${curTop}> onto its own line`);
+                              } else {
+                                  rebuilt += `</${curTop}>`;
+                              }
+                              col += closeLen;
+                              if (lineText.slice(col).trim().length > 0) {
+                                  rebuilt += '\n';
+                                  wasRepaired = true;
+                              }
+                              seenNonWs = true;
+                              continue;
+                          }
+                      } else if (curTop && THINK_TAGS.has(curTop)) {
+                          if (THINK_TAGS.has(closeName)) {
+                              tagStack.pop();
+                              const normalizedClose = `</${curTop}>`;
+                              if (closeName !== curTop) {
+                                  wasRepaired = true;
+                                  repairs.push(`Normalized mismatched </${rawCloseName}> to ${normalizedClose}`);
+                              }
+                              rebuilt += seenNonWs ? `\n${normalizedClose}` : normalizedClose;
+                              if (seenNonWs) wasRepaired = true;
+                              col += closeLen;
+                              if (lineText.slice(col).trim().length > 0) {
+                                  rebuilt += '\n';
+                                  wasRepaired = true;
+                              }
+                              seenNonWs = true;
+                              continue;
+                          }
+                      } else if (ALL_TRACKED_TAGS.has(closeName)) {
+                          if (THINK_TAGS.has(closeName)) {
+                              // Dangling </think> when no think tag is open
+                              if (!sawAnyThinkInRound && tagStack.length === 0) {
+                                  prependOpenThink = true;
+                                  sawAnyThinkInRound = true;
+                                  rebuilt += seenNonWs ? `\n</${closeName}>` : `</${closeName}>`;
+                                  if (seenNonWs) wasRepaired = true;
+                                  repairs.push(`Prepended missing <${closeName}> for dangling </${rawCloseName}>`);
+                                  wasRepaired = true;
+                                  col += closeLen;
+                                  if (lineText.slice(col).trim().length > 0) {
+                                      rebuilt += '\n';
+                                      wasRepaired = true;
+                                  }
+                                  seenNonWs = true;
+                                  continue;
+                              } else {
+                                  rebuilt += `&lt;/${rawCloseName}&gt;`;
+                                  wasRepaired = true;
+                                  repairs.push(`Escaped stray </${rawCloseName}>`);
+                                  col += closeLen;
+                                  seenNonWs = true;
+                                  continue;
+                              }
+                          }
+
+                          const stackIdx = [...tagStack].reverse().findIndex(t => t.name === closeName);
+                          if (stackIdx !== -1) {
+                              const actualIdx = tagStack.length - 1 - stackIdx;
+                              while (tagStack.length - 1 > actualIdx) {
+                                  const unclosedInner = tagStack.pop()!;
+                                  rebuilt += `\n</${unclosedInner.name}>\n`;
+                                  wasRepaired = true;
+                                  repairs.push(`Auto-closed unclosed <${unclosedInner.name}> before </${closeName}>`);
+                              }
+                              tagStack.pop();
+                              rebuilt += `</${closeName}>`;
+                              col += closeLen;
+                              if (lineText.slice(col).trim().length > 0) {
+                                  rebuilt += '\n';
+                                  wasRepaired = true;
+                              }
+                              seenNonWs = true;
+                              continue;
+                          } else {
+                              // Stray closing tag for a tracked tag that was never opened
+                              rebuilt += `&lt;/${rawCloseName}&gt;`;
+                              wasRepaired = true;
+                              repairs.push(`Escaped orphaned </${rawCloseName}>`);
+                              col += closeLen;
+                              seenNonWs = true;
+                              continue;
+                          }
+                      }
+                  }
+
+                  // 4B. Opening tag <name ...>
+                  const openNameM = slice.match(/^<([a-zA-Z_][a-zA-Z0-9_]*)(?=[\s\/>]|$)/);
+                  if (openNameM) {
+                      const rawTagName = openNameM[1];
+                      const tagName = rawTagName.toLowerCase();
+
+                      // If inside <file> at column 0 outside Aider hunk, auto-close previous <file> when a new valid <file> starts
+                      if (curTop && OPAQUE_FILE_TAGS.has(curTop) && !seenNonWs && !inAiderHunk && tagName === 'file') {
+                          const endAngle = this.findXmlTagCloseAngle(lineText, col);
+                          if (endAngle !== -1) {
+                              const attrStr = lineText.slice(col + 1 + rawTagName.length, endAngle);
+                              if (isValidFileTagAttr(attrStr)) {
+                                  tagStack.pop();
+                                  rebuilt += `\n</${curTop}>\n`;
+                                  wasRepaired = true;
+                                  repairs.push(`Auto-closed unclosed <${curTop}> before new <file>`);
+                                  // Fall through to handle the new <file> at top level
+                              }
+                          }
+                      }
+
+                      if (!isOpaqueTop() && ALL_TRACKED_TAGS.has(tagName)) {
+                          let endAngle = this.findXmlTagCloseAngle(lineText, col);
+
+                          // Recover missing '>' on <file ...> opening line if next line isn't continuing attributes
+                          if (endAngle === -1 && OPAQUE_FILE_TAGS.has(tagName)) {
+                              const nextLine = li + 1 < lines.length ? lines[li + 1] : '';
+                              const nextContinuesAttr = /^\s*[a-zA-Z_][a-zA-Z0-9_-]*\s*=/.test(nextLine) || /^\s*>/.test(nextLine);
+                              if (!nextContinuesAttr) {
+                                  const candidateAttr = lineText.slice(col + 1 + rawTagName.length);
+                                  if (isValidFileTagAttr(candidateAttr)) {
+                                      lineText = `${lineText}>`;
+                                      endAngle = lineText.length - 1;
+                                      wasRepaired = true;
+                                      repairs.push(`Inserted missing '>' on <${tagName}> opening tag`);
+                                  }
+                              }
+                          }
+
+                          if (endAngle !== -1) {
+                              const fullTagText = lineText.slice(col, endAngle + 1);
+                              const innerAttrRaw = lineText.slice(col + 1 + rawTagName.length, endAngle);
+                              const isSelfClosing = innerAttrRaw.trimEnd().endsWith('/');
+                              const attrClean = isSelfClosing ? innerAttrRaw.trimEnd().slice(0, -1) : innerAttrRaw;
+
+                              let shouldTrack = true;
+                              if (OPAQUE_FILE_TAGS.has(tagName)) {
+                                  shouldTrack = isValidFileTagAttr(attrClean);
+                              } else if (tagName === 'form') {
+                                  shouldTrack = !seenNonWs || /\b(?:title|id)=/i.test(attrClean);
+                              } else if (tagName === 'details') {
+                                  shouldTrack = !seenNonWs || /\b(?:class|open)\b/i.test(attrClean);
+                              } else if (PLAN_CHILD_TAGS.has(tagName)) {
+                                  shouldTrack = tagStack.some(t => t.name === 'plan' || t.name === 'phase');
+                              } else if (!isSelfClosing && REQUIRE_ATTR_OR_CLOSE.has(tagName)) {
+                                  // Guard against unbackticked bare prose mention like "Use <unmute_files> to check"
+                                  const hasAttrs = attrClean.trim().length > 0;
+                                  const restOfLine = lineText.slice(endAngle + 1);
+                                  const remainingAfter = restOfLine + '\n' + lines.slice(li + 1).join('\n');
+                                  const hasCloserAhead = new RegExp(`<\\/\\s*${tagName}\\s*>`, 'i').test(remainingAfter);
+                                  if (!hasAttrs && !hasCloserAhead && seenNonWs && restOfLine.trim().length > 0) {
+                                      // Plain prose mention without closer -> wrap in backticks instead of opening a block
+                                      rebuilt += `\`${fullTagText}\``;
+                                      col = endAngle + 1;
+                                      seenNonWs = true;
+                                      wasRepaired = true;
+                                      repairs.push(`Backtick-escaped unclosed prose mention of <${tagName}>`);
+                                      continue;
+                                  }
+                              }
+
+                              if (shouldTrack) {
+                                  const hadPrefix = seenNonWs && !/^[ \t]*(?:(?:[-*+]|\d+\.)[ \t]+|>[ \t]*)?$/.test(rebuilt);
+                                  if (hadPrefix) {
+                                      rebuilt = `${rebuilt.trimEnd()}\n`;
+                                      wasRepaired = true;
+                                      repairs.push(`Moved mid-line <${tagName}> to start of new line`);
+                                  }
+                                  rebuilt += fullTagText;
+                                  col = endAngle + 1;
+                                  seenNonWs = true;
+
+                                  if (THINK_TAGS.has(tagName)) {
+                                      sawAnyThinkInRound = true;
+                                  }
+
+                                  if (!isSelfClosing) {
+                                      tagStack.push({ name: tagName });
+                                  } else if (lineText.slice(col).trim().length > 0) {
+                                      rebuilt += '\n';
+                                      wasRepaired = true;
+                                  }
+                                  continue;
+                              }
+                          } else if (li === lines.length - 1 && !seenNonWs) {
+                              // Truncated opening tag at very end of stream without '>'
+                              rebuilt += `\`${slice}\``;
+                              col = lineText.length;
+                              seenNonWs = true;
+                              wasRepaired = true;
+                              repairs.push(`Escaped truncated trailing <${tagName} tag at EOF`);
+                              continue;
+                          }
+                      }
+                  }
+              }
+
+              if (ch !== ' ' && ch !== '\t') {
+                  seenNonWs = true;
+              }
+              rebuilt += ch;
+              col++;
+          }
+
+          outLines.push(rebuilt);
+      }
+
+      if (prependOpenThink) {
+          outLines.unshift('<think>');
+      }
+
+      // Close any unclosed structures left at EOF in clean LIFO order on their own lines
+      if (activeFence) {
+          outLines.push(activeFence.char.repeat(activeFence.len));
+          wasRepaired = true;
+          repairs.push('Closed unclosed code fence at EOF');
+      }
+
+      if (inAiderHunk === 'search') {
+          outLines.push('=======', '', '>>>>>>> REPLACE');
+          wasRepaired = true;
+          repairs.push('Closed unclosed Aider SEARCH hunk at EOF');
+      } else if (inAiderHunk === 'replace') {
+          outLines.push('>>>>>>> REPLACE');
+          wasRepaired = true;
+          repairs.push('Closed unclosed Aider REPLACE hunk at EOF');
+      }
+
+      while (tagStack.length > 0) {
+          const unclosed = tagStack.pop()!;
+          outLines.push(`</${unclosed.name}>`);
+          wasRepaired = true;
+          repairs.push(`Auto-closed unclosed <${unclosed.name}> at EOF`);
+      }
+
+      const repaired = outLines.join('\n');
+      return {
+          repaired,
+          wasRepaired,
+          repairs
+      };
+  }
+
   /**
    * Sanitizes message content for LLM prompt transmission by removing ephemeral UI widgets,
    * animations, and raw processing tool artifacts.
@@ -15236,9 +16033,10 @@ Generate the surgical fix to resolve these errors.`;
       if (!content || (!this._discussionCapabilities.autoApply && !this._discussionCapabilities.agentMode)) {
           return;
       }
-      const briefingRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<mission_briefing\b([^>]*?)(?:\/>|>([\s\S]*?)<\/mission_briefing>)/gim;
+      const scanContent = this.stripProtectedRegionsForTagScan(content);
+      const briefingRegex = /<mission_briefing\b([^>]*?)(?:\/>|>([\s\S]*?)<\/mission_briefing>)/gim;
       let match: RegExpExecArray | null;
-      while ((match = briefingRegex.exec(content)) !== null) {
+      while ((match = briefingRegex.exec(scanContent)) !== null) {
           const attrStr = match[1] || '';
           const inner = (match[2] || '').trim();
 

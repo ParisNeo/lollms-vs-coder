@@ -1,4 +1,7 @@
+import * as vscode from 'vscode';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
+import { AgentSecurityGuard } from '../../security/agentSecurityGuard';
+import { ContextPoisoningGate } from '../../security/contextPoisoningGate';
 import * as path from 'path';
 
 export const runFileTool: ToolDefinition = {
@@ -20,7 +23,61 @@ export const runFileTool: ToolDefinition = {
              return { success: false, output: "Error: Agent capabilities not available." };
         }
 
+        const isBuilder = env.agentManager.getCurrentDiscussion()?.capabilities?.workerType === 'builder';
+        if (isBuilder) {
+            return {
+                success: false,
+                output: "🛑 SECURITY ERROR: The 'Builder' agent is forbidden from executing files autonomously."
+            };
+        }
+
         const filePath = params.file_path;
+        const pathCheck = AgentSecurityGuard.validateWorkspacePath(filePath, env.workspaceRoot);
+        if (!pathCheck.valid) {
+            return { success: false, output: `🛑 SECURITY VIOLATION: ${pathCheck.reason}` };
+        }
+
+        const workspaceRoots = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
+        if (!workspaceRoots.includes(env.workspaceRoot.uri.fsPath)) {
+            workspaceRoots.unshift(env.workspaceRoot.uri.fsPath);
+        }
+        const secLevel = env.agentManager.getSecurityLevel?.() || 'guarded';
+
+        if (params.args) {
+            const argsCheck = AgentSecurityGuard.analyzeShellCommand(params.args, secLevel, workspaceRoots);
+            if (argsCheck.decision === 'block') {
+                return { success: false, output: `🛑 SECURITY VIOLATION in args: ${argsCheck.reason}` };
+            }
+        }
+
+        const resolved = await env.contextManager?.resolveWorkspaceFromPath?.(filePath);
+        const targetUri = resolved?.uri || (path.isAbsolute(filePath) ? vscode.Uri.file(filePath) : vscode.Uri.joinPath(env.workspaceRoot.uri, filePath));
+        try {
+            const bytes = await vscode.workspace.fs.readFile(targetUri);
+            const scriptContent = Buffer.from(bytes).toString('utf8');
+            const scan = AgentSecurityGuard.analyzeScriptContent(scriptContent, filePath, secLevel, workspaceRoots);
+            if (scan.decision === 'block') {
+                return { success: false, output: `🛑 SECURITY VIOLATION: ${scan.reason}` };
+            }
+            if (scan.decision === 'confirm') {
+                const detail = scan.matchedLines.length > 0
+                    ? `${scan.reason}\n\nFlagged lines:\n${scan.matchedLines.slice(0, 8).join('\n')}`
+                    : scan.reason;
+                const decision = await env.agentManager.requestSecurityApproval(
+                    `Authorize File Execution: ${filePath}`,
+                    detail,
+                    'run_file',
+                    filePath,
+                    signal
+                );
+                if (decision === 'block') {
+                    return { success: false, output: `🛑 Execution of '${filePath}' was denied by the user.` };
+                }
+            }
+        } catch (err: any) {
+            return { success: false, output: `🛑 Error: Cannot read '${filePath}' inside workspace: ${err?.message || err}` };
+        }
+
         const ext = path.extname(filePath).toLowerCase();
         let command = "";
         
@@ -63,6 +120,11 @@ export const runFileTool: ToolDefinition = {
                 break;
         }
         const timeoutMs = params.timeout_s ? params.timeout_s * 1000 : 900000; // 15 minute default
-        return await env.agentManager.runCommand(command, signal, { timeoutMs });
+        const runRes = await env.agentManager.runCommand(command, signal, { timeoutMs });
+        const gateRes = await ContextPoisoningGate.sanitizeExecutionOutput(runRes.output || '', `run_file://${filePath}`, { signal });
+        return {
+            success: runRes.success && !gateRes.blocked,
+            output: gateRes.sanitizedOutput
+        };
     }
 };

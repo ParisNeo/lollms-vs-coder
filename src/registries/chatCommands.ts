@@ -1,7 +1,11 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { LollmsServices } from '../lollmsContext';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
 import { DiscussionItem, DiscussionGroupItem } from '../commands/discussionTreeProvider';
+import { Discussion } from '../discussionManager';
+import { ChatMessage } from '../lollmsAPI';
+import { Logger } from '../logger';
 import { startDiscussionWithInitialPrompt } from '../utils/discussionUtils';
 import { AgentManager } from '../agentManager';
 import { AutomationPanel } from '../panels/automationPanel';
@@ -9,6 +13,57 @@ import { getProcessedSystemPrompt, stripThinkingTags } from '../utils';
 import { getAvailableContextSelections, loadContextSelectionFile } from '../commands/contextCommands';
 
 export async function registerChatCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
+    const resolveForkSource = async (arg?: any): Promise<{ sourceDiscussion: Discussion | null; activePanel?: ChatPanel }> => {
+        if (arg instanceof ChatPanel || (arg && typeof arg.getCurrentDiscussion === 'function')) {
+            return { activePanel: arg, sourceDiscussion: arg.getCurrentDiscussion() };
+        }
+        if (arg && arg.discussion) {
+            const openPanel = ChatPanel.panels.get(arg.discussion.id);
+            if (openPanel && !openPanel.isDisposed) {
+                return {
+                    activePanel: openPanel,
+                    sourceDiscussion: openPanel.getCurrentDiscussion() || arg.discussion
+                };
+            }
+            const fresh = await services.discussionManager.getDiscussion(arg.discussion.id);
+            return {
+                activePanel: ChatPanel.currentPanel && !ChatPanel.currentPanel.isDisposed ? ChatPanel.currentPanel : undefined,
+                sourceDiscussion: fresh || arg.discussion
+            };
+        }
+        if (ChatPanel.currentPanel && !ChatPanel.currentPanel.isDisposed) {
+            return { activePanel: ChatPanel.currentPanel, sourceDiscussion: ChatPanel.currentPanel.getCurrentDiscussion() };
+        }
+        return { sourceDiscussion: null };
+    };
+
+    const openForkedDiscussion = async (discussion: Discussion, preferredColumn?: vscode.ViewColumn): Promise<ChatPanel> => {
+        const targetColumn = preferredColumn || (ChatPanel.currentPanel && !ChatPanel.currentPanel.isDisposed ? ChatPanel.currentPanel._panel.viewColumn : undefined);
+        const panel = ChatPanel.createOrShow(services, discussion.id, targetColumn);
+
+        panel.setProcessManager(services.processManager);
+        panel.setContextManager(services.contextManager);
+        panel.setPersonalityManager(services.personalityManager);
+        panel.setHerdManager(services.herdManager);
+
+        const agent = new AgentManager(
+            panel, services.lollmsAPI, services.contextManager, services.gitIntegration,
+            services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
+            services.toolManager,
+            services.rlmDb
+        );
+        agent.projectMemoryManager = services.projectMemoryManager;
+        agent.personalityManager = services.personalityManager;
+        agent.setProcessManager(services.processManager);
+        panel.setAgentManager(agent);
+
+        panel.adoptDiscussion(discussion);
+        panel._panel.reveal(targetColumn, false);
+
+        await panel.loadDiscussion();
+        services.treeProviders.discussion?.refresh();
+        return panel;
+    };
     
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.copyChatHistory', async (item?: any) => {
         let disc: any = null;
@@ -402,18 +457,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussionWithSameContext', async (arg?: any) => {
-        let sourceDiscussion: any = null;
-        let activePanel: ChatPanel | undefined = undefined;
-
-        if (arg instanceof ChatPanel || (arg && typeof arg.getCurrentDiscussion === 'function')) {
-            activePanel = arg;
-            sourceDiscussion = arg.getCurrentDiscussion();
-        } else if (arg && arg.discussion) {
-            sourceDiscussion = arg.discussion;
-        } else if (ChatPanel.currentPanel) {
-            activePanel = ChatPanel.currentPanel;
-            sourceDiscussion = ChatPanel.currentPanel.getCurrentDiscussion();
-        }
+        const { sourceDiscussion, activePanel } = await resolveForkSource(arg);
 
         if (!sourceDiscussion) {
             vscode.window.showWarningMessage("No active discussion found to replicate context from.");
@@ -442,7 +486,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         const allTargetFiles = Array.from(new Set([...includedFiles, ...mutedFiles]));
 
         const newDiscussion = services.discussionManager.createNewDiscussion(sourceDiscussion.groupId || null);
-        newDiscussion.title = `Fork of ${sourceDiscussion.title || 'Discussion'}`;
+        newDiscussion.title = 'New Discussion';
         newDiscussion.mutedFiles = mutedFiles;
         (newDiscussion as any).includedFiles = JSON.parse(JSON.stringify(mergedIncluded));
         newDiscussion.model = sourceDiscussion.model;
@@ -462,27 +506,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
             await provider.addFilesToContext(allTargetFiles);
         }
 
-        const panel = ChatPanel.createOrShow(services, newDiscussion.id);
-        panel._panel.reveal();
-
-        const agent = new AgentManager(
-            panel, services.lollmsAPI, services.contextManager, services.gitIntegration,
-            services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
-            services.toolManager,
-            services.rlmDb
-        );
-        agent.projectMemoryManager = services.projectMemoryManager;
-        agent.personalityManager = services.personalityManager;
-        agent.setProcessManager(services.processManager);
-        panel.setAgentManager(agent);
-
-        panel.setProcessManager(services.processManager);
-        panel.setContextManager(services.contextManager);
-        panel.setPersonalityManager(services.personalityManager);
-        panel.setHerdManager(services.herdManager);
-
-        await panel.loadDiscussion();
-        services.treeProviders.discussion?.refresh();
+        await openForkedDiscussion(newDiscussion, activePanel?._panel.viewColumn);
 
         vscode.window.showInformationMessage(`Created new discussion "${newDiscussion.title}" with ${allTargetFiles.length} files (${mutedFiles.length} muted).`);
     }));
@@ -510,18 +534,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.forkAndCompressDiscussion', async (arg?: any) => {
-        let sourceDiscussion: any = null;
-        let activePanel: ChatPanel | undefined = undefined;
-
-        if (arg instanceof ChatPanel || (arg && typeof arg.getCurrentDiscussion === 'function')) {
-            activePanel = arg;
-            sourceDiscussion = arg.getCurrentDiscussion();
-        } else if (arg && arg.discussion) {
-            sourceDiscussion = arg.discussion;
-        } else if (ChatPanel.currentPanel) {
-            activePanel = ChatPanel.currentPanel;
-            sourceDiscussion = ChatPanel.currentPanel.getCurrentDiscussion();
-        }
+        const { sourceDiscussion, activePanel } = await resolveForkSource(arg);
 
         if (!sourceDiscussion) {
             vscode.window.showWarningMessage("No active discussion found to fork and compress.");
@@ -661,27 +674,7 @@ ${transcript}`;
                 await provider.addFilesToContext(allTargetFiles);
             }
 
-            const panel = ChatPanel.createOrShow(services, newDiscussion.id);
-            panel._panel.reveal();
-
-            const agent = new AgentManager(
-                panel, services.lollmsAPI, services.contextManager, services.gitIntegration,
-                services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
-                services.toolManager,
-                services.rlmDb
-            );
-            agent.projectMemoryManager = services.projectMemoryManager;
-            agent.personalityManager = services.personalityManager;
-            agent.setProcessManager(services.processManager);
-            panel.setAgentManager(agent);
-
-            panel.setProcessManager(services.processManager);
-            panel.setContextManager(services.contextManager);
-            panel.setPersonalityManager(services.personalityManager);
-            panel.setHerdManager(services.herdManager);
-
-            await panel.loadDiscussion();
-            services.treeProviders.discussion?.refresh();
+            await openForkedDiscussion(newDiscussion, activePanel?._panel.viewColumn);
 
             vscode.window.showInformationMessage(`Forked & compressed into "${newDiscussion.title}" (2 alternating messages initialized).`);
         });

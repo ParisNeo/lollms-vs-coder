@@ -66,7 +66,7 @@ function findSymbolInDocumentText(document: vscode.TextDocument, targetMember: s
         const trimmed = lineText.trim();
         if (trimmed.length === 0 || trimmed.startsWith('//') || (isPython && trimmed.startsWith('#'))) continue;
 
-        const isMatch = isPython 
+        const isMatch = isPython
             ? (pythonDefRegex.test(lineText) || new RegExp(`^(\\s*)(?:def|class)\\s+${escapedLeaf}\\b`).test(lineText))
             : (jsMethodRegex.test(lineText) || jsVarFuncRegex.test(lineText) || generalDeclRegex.test(lineText));
 
@@ -131,36 +131,161 @@ function findSymbolInDocumentText(document: vscode.TextDocument, targetMember: s
     return new vscode.Range(startPos, endPos);
 }
 
+/**
+ * Locate and extract a symbol's implementation source from an already-opened document.
+ * Used both by the show_symbol tool (to validate) and by the context renderer
+ * (to build the placeholder-based partial-file display).
+ */
+export interface SymbolExtractionResult {
+    found: boolean;
+    range?: vscode.Range;
+    code?: string;
+    languageId?: string;
+}
+
+export async function extractSymbolFromDocument(
+    document: vscode.TextDocument,
+    symbolParts: string[] = [],
+    docSymbols?: vscode.DocumentSymbol[]
+): Promise<SymbolExtractionResult> {
+    if (!symbolParts || symbolParts.length === 0) return { found: false };
+
+    let matchedRange: vscode.Range | null = null;
+
+    if (docSymbols && docSymbols.length > 0) {
+        const findHierarchical = (syms: vscode.DocumentSymbol[], pathIdx: number): vscode.DocumentSymbol | null => {
+            const targetName = symbolParts[pathIdx].toLowerCase();
+            const targetNorm = normalizeSymbolIdentifier(symbolParts[pathIdx]);
+
+            for (const s of syms) {
+                const sNorm = normalizeSymbolIdentifier(s.name);
+                const sClean = s.name.split('(')[0].split('<')[0].split(':')[0].trim().toLowerCase();
+
+                const isMatch = sNorm === targetNorm || sClean === targetName || sClean.endsWith('.' + targetName) || sClean.endsWith('::' + targetName);
+                if (isMatch) {
+                    if (pathIdx === symbolParts.length - 1) {
+                        return s;
+                    }
+                    if (s.children && s.children.length > 0) {
+                        const childMatch = findHierarchical(s.children, pathIdx + 1);
+                        if (childMatch) return childMatch;
+                    }
+                }
+            }
+
+            if (pathIdx === 0 && symbolParts.length === 1) {
+                for (const s of syms) {
+                    if (s.children && s.children.length > 0) {
+                        const found = findHierarchical(s.children, 0);
+                        if (found) return found;
+                    }
+                }
+            }
+            return null;
+        };
+
+        const matched = findHierarchical(docSymbols, 0);
+        if (matched) {
+            matchedRange = matched.range;
+        }
+    }
+
+    if (!matchedRange) {
+        matchedRange = findSymbolInDocumentText(document, symbolParts);
+    }
+
+    if (!matchedRange) return { found: false };
+
+    const startLine = matchedRange.start.line;
+    const fullRange = new vscode.Range(new vscode.Position(startLine, 0), matchedRange.end);
+    const code = document.getText(fullRange);
+
+    return {
+        found: true,
+        range: matchedRange,
+        code,
+        languageId: document.languageId
+    };
+}
+
+/**
+ * Best-effort unmute of the target file within the active discussion so the
+ * newly-expanded symbol becomes visible on the next context build.
+ */
+async function attemptUnmuteFile(env: ToolExecutionEnv, uri: vscode.Uri, filePath: string): Promise<void> {
+    try {
+        const agent: any = (env as any).agentManager;
+        if (!agent) return;
+
+        let disc: any = null;
+        const panel = agent.panel || agent._panel;
+        if (panel && typeof panel.getCurrentDiscussion === 'function') {
+            disc = panel.getCurrentDiscussion();
+        } else if (typeof agent.getCurrentDiscussion === 'function') {
+            disc = agent.getCurrentDiscussion();
+        } else if (agent.discussion) {
+            disc = agent.discussion;
+        }
+
+        if (!disc || !Array.isArray(disc.mutedFiles) || disc.mutedFiles.length === 0) return;
+
+        const cleanPath = (p: string) => p.replace(/\\/g, '/').toLowerCase().trim().replace(/^\.?\/+/, '');
+        const isMatch = (a: string, b: string) => {
+            const ca = cleanPath(a);
+            const cb = cleanPath(b);
+            return ca === cb || ca.endsWith('/' + cb) || cb.endsWith('/' + ca);
+        };
+
+        const before = disc.mutedFiles.length;
+        disc.mutedFiles = disc.mutedFiles.filter((m: string) =>
+            !isMatch(m, filePath) && !isMatch(m, uri.fsPath)
+        );
+
+        if (disc.mutedFiles.length === before) return;
+
+        if (disc.capabilities && Array.isArray(disc.capabilities.mutedFiles)) {
+            disc.capabilities.mutedFiles = [...disc.mutedFiles];
+        }
+
+        const dm = agent.discussionManager || agent._discussionManager;
+        if (dm && typeof dm.saveDiscussion === 'function') {
+            await dm.saveDiscussion(disc);
+        }
+    } catch {
+        // Swallow — state mutation was already applied, unmute is optional polish.
+    }
+}
+
 export const showSymbolTool: ToolDefinition = {
     name: "show_symbol",
-    description: "Retrieves the exact implementation source code of one or more specified symbols (functions, methods, classes, interfaces, etc.) from a file without loading the entire file. You can request multiple symbols at once separated by commas or in the 'symbols' list (e.g. 'path/to/file.py:funcA, funcB' or path='file.py' symbols='funcA, funcB').",
+    description: "Expands specific symbol(s) (functions, methods, classes, interfaces, etc.) from a file into the CONTEXT file view WITHOUT dumping their code into chat history. On the next model turn, the file's context block will display the requested implementation(s) inline in their file-relative positions (surrounded by '...' placeholder regions for the rest of the file). Call this ONCE per symbol; do NOT re-call for symbols you have already expanded. If the file is already fully loaded [C] you will be told you already possess it — no action taken.",
     isAgentic: true,
     isDefault: true,
     permissionGroup: 'filesystem_read',
     parameters: [
-        { 
-            name: "target", 
-            type: "string", 
-            description: "The file path and symbol identifier(s) separated by colon, e.g. 'src/utils.ts:myFunction' or 'app/models.py:User:get_by_id, User:save'.", 
-            required: false 
+        {
+            name: "target",
+            type: "string",
+            description: "The file path and symbol identifier(s) separated by colon, e.g. 'src/utils.ts:myFunction' or 'app/models.py:User:get_by_id, User:save'.",
+            required: false
         },
-        { 
-            name: "path", 
-            type: "string", 
-            description: "The relative workspace file path if not specified in target.", 
-            required: false 
+        {
+            name: "path",
+            type: "string",
+            description: "The relative workspace file path if not specified in target.",
+            required: false
         },
-        { 
-            name: "symbol", 
-            type: "string", 
-            description: "Single symbol name or comma-separated symbol names (e.g. 'function_name' or 'funcA, funcB').", 
-            required: false 
+        {
+            name: "symbol",
+            type: "string",
+            description: "Single symbol name or comma-separated symbol names (e.g. 'function_name' or 'funcA, funcB').",
+            required: false
         },
-        { 
-            name: "symbols", 
-            type: "array", 
-            description: "List or comma-separated string of symbol names to retrieve from the file at once.", 
-            required: false 
+        {
+            name: "symbols",
+            type: "array",
+            description: "List or comma-separated string of symbol names to expand into context at once.",
+            required: false
         }
     ],
     async execute(params: { target?: string; path?: string; symbol?: string; symbols?: string | string[]; file?: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
@@ -173,7 +298,6 @@ export const showSymbolTool: ToolDefinition = {
             if (clean && !symbolsList.includes(clean)) symbolsList.push(clean);
         };
 
-        // 1. Parse target / path / symbol / symbols parameters
         if (rawTarget.includes(':') && !/^[a-zA-Z]:[\\/]/.test(rawTarget)) {
             const colonIdx = rawTarget.indexOf(':');
             filePath = rawTarget.substring(0, colonIdx).trim();
@@ -215,6 +339,28 @@ export const showSymbolTool: ToolDefinition = {
             return { success: false, output: "Operation cancelled." };
         }
 
+        const provider = env.contextManager.getContextStateProvider();
+        if (!provider) {
+            return { success: false, output: "Error: Context state provider is unavailable. Cannot expand symbol into context." };
+        }
+
+        // Read current context state — determines transition
+        let currentState: any = 'tree-only';
+        try {
+            currentState = provider.getStateForUri(resolution.uri);
+        } catch {
+            // Keep default
+        }
+
+        // CASE 1: full file already loaded — warn and stop.
+        if (currentState === 'included') {
+            return {
+                success: true,
+                output: `ℹ️ File '${filePath}' is ALREADY loaded with full content in context [C]. You already possess every symbol in this file. No action taken — re-requesting is not needed.`
+            };
+        }
+
+        // Load the document to validate that the requested symbols actually exist
         let document: vscode.TextDocument;
         try {
             document = await vscode.workspace.openTextDocument(resolution.uri);
@@ -222,88 +368,90 @@ export const showSymbolTool: ToolDefinition = {
             return { success: false, output: `Error reading '${filePath}': ${err.message}` };
         }
 
-        // Try Language Server AST symbols provider once for the file
         let docSymbols: vscode.DocumentSymbol[] | undefined;
         try {
             docSymbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', resolution.uri);
         } catch {}
 
-        const lang = document.languageId || path.extname(filePath).substring(1) || 'plaintext';
-        const outputs: string[] = [];
-        let successCount = 0;
+        const validSymbols: string[] = [];
+        const notFoundSymbols: string[] = [];
 
         for (const rawSym of symbolsList) {
-            const symbolParts = rawSym.split(':').map(p => p.trim()).filter(Boolean);
-            if (symbolParts.length === 0) continue;
-
-            let matchedRange: vscode.Range | null = null;
-
-            if (docSymbols && docSymbols.length > 0) {
-                const findHierarchical = (syms: vscode.DocumentSymbol[], pathIdx: number): vscode.DocumentSymbol | null => {
-                    const targetName = symbolParts[pathIdx].toLowerCase();
-                    const targetNorm = normalizeSymbolIdentifier(symbolParts[pathIdx]);
-
-                    for (const s of syms) {
-                        const sNorm = normalizeSymbolIdentifier(s.name);
-                        const sClean = s.name.split('(')[0].split('<')[0].split(':')[0].trim().toLowerCase();
-
-                        const isMatch = sNorm === targetNorm || sClean === targetName || sClean.endsWith('.' + targetName) || sClean.endsWith('::' + targetName);
-                        if (isMatch) {
-                            if (pathIdx === symbolParts.length - 1) {
-                                return s;
-                            }
-                            if (s.children && s.children.length > 0) {
-                                const childMatch = findHierarchical(s.children, pathIdx + 1);
-                                if (childMatch) return childMatch;
-                            }
-                        }
-                    }
-
-                    if (pathIdx === 0 && symbolParts.length === 1) {
-                        for (const s of syms) {
-                            if (s.children && s.children.length > 0) {
-                                const found = findHierarchical(s.children, 0);
-                                if (found) return found;
-                            }
-                        }
-                    }
-                    return null;
-                };
-
-                const matched = findHierarchical(docSymbols, 0);
-                if (matched) {
-                    matchedRange = matched.range;
-                }
-            }
-
-            if (!matchedRange) {
-                matchedRange = findSymbolInDocumentText(document, symbolParts);
-            }
-
-            if (matchedRange) {
-                successCount++;
-                const startLine = matchedRange.start.line;
-                const endLine = matchedRange.end.line;
-                const fullSymbolRange = new vscode.Range(new vscode.Position(startLine, 0), matchedRange.end);
-                const symbolCode = document.getText(fullSymbolRange);
-                const lineCount = endLine - startLine + 1;
-
-                outputs.push(`### 📄 Symbol Code: \`${symbolParts.join(':')}\` in \`${filePath}\` (Lines ${startLine + 1}–${endLine + 1}, ${lineCount} lines)\n\`\`\`${lang}\n${symbolCode}\n\`\`\``);
+            const parts = rawSym.split(':').map(p => p.trim()).filter(Boolean);
+            if (parts.length === 0) continue;
+            const res = await extractSymbolFromDocument(document, parts, docSymbols);
+            if (res.found) {
+                validSymbols.push(rawSym);
             } else {
-                outputs.push(`⚠️ Symbol '${symbolParts.join(':')}' was not found in '${filePath}'.`);
+                notFoundSymbols.push(rawSym);
             }
         }
 
-        if (successCount === 0) {
+        if (validSymbols.length === 0) {
             return {
                 success: false,
-                output: outputs.join('\n\n')
+                output: `❌ No valid symbols found in '${filePath}'.\n${notFoundSymbols.map(s => `• '${s}' not found.`).join('\n')}`
             };
         }
 
-        return {
-            success: true,
-            output: outputs.join('\n\n')
-        };
+        // Determine the new symbol-state (merge with any already-expanded symbols)
+        let existingSymbols: string[] = [];
+        if (typeof currentState === 'string' && currentState.startsWith('symbols:')) {
+            existingSymbols = currentState.substring(8).split(',').map((s: string) => s.trim()).filter(Boolean);
+        }
+
+        const merged = [...existingSymbols];
+        const alreadyExpanded: string[] = [];
+        for (const sym of validSymbols) {
+            if (merged.some(s => s.toLowerCase() === sym.toLowerCase())) {
+                alreadyExpanded.push(sym);
+            } else {
+                merged.push(sym);
+            }
+        }
+
+        const newState = `symbols:${merged.join(', ')}` as any;
+
+        try {
+            await provider.setStateForUri(resolution.uri, newState);
+        } catch (e: any) {
+            return { success: false, output: `Failed to update file context state: ${e.message}` };
+        }
+
+        // Best-effort unmute if the file is currently muted in the active discussion
+        await attemptUnmuteFile(env, resolution.uri, filePath);
+
+        // Compose a concise confirmation (this is what lands in chat history — keep tight)
+        let transitionLabel = 'File added to context in symbol-focused view.';
+        if (typeof currentState === 'string' && currentState.startsWith('symbols:')) {
+            transitionLabel = 'Symbol implementation uncompressed under the existing symbol-focused context view.';
+        } else if (currentState === 'definitions-only' || currentState === 'structure') {
+            transitionLabel = 'File upgraded from structure-only [D] to symbol-focused context view.';
+        }
+
+        const lines: string[] = [
+            `✅ ${transitionLabel}`,
+            `📁 File: ${filePath}`,
+            `🔓 Expanded symbol(s): ${validSymbols.join(', ')}`
+        ];
+
+        if (alreadyExpanded.length > 0) {
+            lines.push(`ℹ️ Already expanded in context (no-op): ${alreadyExpanded.join(', ')}`);
+        }
+
+        lines.push('');
+        lines.push(`On your next turn, this file's context block will render the requested implementation(s) inline in their file-relative positions — the rest of the file is collapsed with "..." placeholders. Indentation is preserved verbatim so you can produce accurate patches. Do NOT call show_symbol again for these symbols; inspect the file block in context instead.`);
+
+        if (notFoundSymbols.length > 0) {
+            lines.push('');
+            lines.push(`⚠️ Not found in file (skipped): ${notFoundSymbols.join(', ')}`);
+        }
+
+        lines.push('');
+        lines.push(`If this file was muted in the current discussion and still does not appear on your next turn, output \`<unmute_files>\\n${filePath}\\n</unmute_files>
+
+\` once.`);
+
+        return { success: true, output: lines.join('\n') };
     }
 };

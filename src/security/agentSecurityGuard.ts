@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import * as crypto from 'crypto';
+import { URL } from 'url';
 import { DiscussionCapabilities } from '../utils';
 import { Logger } from '../logger';
 
@@ -72,13 +74,24 @@ const SCRIPT_DESTRUCTIVE_PATTERNS: Array<{ regex: RegExp; reason: string }> = [
     { regex: /\bfs\.(?:rmSync|rmdirSync|promises\.rm)\s*\([^\n)]*recursive\s*:\s*true/, reason: 'Recursive directory deletion via fs.rmSync/rm()' },
     { regex: /\b(?:os\.remove|os\.unlink|fs\.unlinkSync)\s*\(/, reason: 'Direct file deletion inside script' },
     { regex: /\b(?:os\.system|subprocess\.(?:run|Popen|call|check_call)|execSync|spawnSync)\s*\([^\n)]*(?:\brm\s+-|\bdel\s+\/|\brd\s+\/s|git\s+reset\s+--hard)/i, reason: 'Subprocess executes destructive shell command' },
-    { regex: /(?:open|Path|os\.listdir|os\.walk|os\.scandir|os\.chdir|shutil\.(?:copy|move|rmtree))\s*\(\s*['"](?:\/|[A-Za-z]:\\|\.\.\/|\.\.\\)/, reason: 'Script accesses absolute or parent-directory paths outside workspace' },
-    { regex: /\bos\.path\.expanduser\s*\(/, reason: 'Script resolves user home directory (~)' },
-    { regex: /\b(?:os\.environ|os\.getenv|dotenv|load_dotenv|keyring|getpass)\b/, reason: 'Script inspects environment variables or secrets' },
+    { regex: /\b(?:os\.environ|os\.getenv|dotenv|load_dotenv|keyring|getpass|process\.env)\b/, reason: 'Script inspects environment variables or secrets' },
     { regex: /['"](?:\.env(?:\.|$)|id_rsa|id_ed25519|\.ssh|\.aws|\.kube)/i, reason: 'Script references credential or secret files' },
-    { regex: /\b(?:requests\.(?:get|post|put|delete|patch|request|Session)|urllib\.request|http\.client|httpx\.|aiohttp\.|socket\.socket|ftplib\.|smtplib\.)/, reason: 'Script makes external network or socket connections' },
-    { regex: /\b(?:subprocess\.(?:run|Popen|call|check_call|check_output)|os\.system|os\.popen)\s*\(/, reason: 'Script spawns external subprocesses or shell commands' }
+    { regex: /\b(?:subprocess\.(?:run|Popen|call|check_call|check_output)|os\.system|os\.popen|child_process\.(?:exec|execSync|spawn|spawnSync|execFile|execFileSync))\b/, reason: 'Script spawns external subprocesses or shell commands' }
 ];
+
+const SCRIPT_HARD_BLOCK_PATTERNS: Array<{ regex: RegExp; reason: string }> = [
+    { regex: /\bos\.path\.expanduser\s*\(|\bos\.homedir\s*\(/, reason: 'Resolving user home directory outside the workspace is forbidden.' },
+    { regex: /\b(?:os\.chdir|process\.chdir)\s*\(\s*[`'"]\s*(?:\.\.|\/|~|[A-Za-z]:[\\/])/, reason: 'Changing working directory outside the workspace is forbidden.' },
+    { regex: /(?:open|Path|os\.listdir|os\.walk|os\.scandir|os\.chdir|shutil\.(?:copy|copy2|copytree|move|rmtree)|fs\.(?:readFile|readFileSync|writeFile|writeFileSync|appendFileSync|readdir|readdirSync|rm|rmSync|unlinkSync|mkdirSync|promises\.[a-zA-Z]+))\s*\(\s*(?:[rfbuRFBU]{0,2}[`'"]\s*(?:~|\.\.[\\/]|[A-Za-z]:[\\/]|\/(?!dev\/null\b))|path\.(?:join|resolve)\s*\([^)]*['"]\.\.)/, reason: 'Accessing filesystem paths outside the workspace is forbidden.' },
+    { regex: /['"`][^'"`\r\n]*\.lollms[\\/](?:knowledge\.ttl|memory|briefing|discussions|external_links\.json)/i, reason: 'Modifying internal extension memory, briefing, or knowledge files during execution is forbidden.' },
+    { regex: /(?:exec|eval)\s*\(\s*(?:base64\.b64decode|Buffer\.from|atob)\b/i, reason: 'Obfuscated base64 code execution is forbidden.' },
+    { regex: /\bnew\s+Function\s*\(/, reason: 'Dynamic Function() execution is forbidden.' }
+];
+
+const NETWORK_CLI_REGEX = /(?:^|[;&|(\s])(?:curl(?:\.exe)?|wget(?:\.exe)?|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|Start-BitsTransfer|nc|ncat|netcat|socat|telnet|ssh|scp|sftp|ftp|lynx|w3m|xh)\b/i;
+const SCRIPT_NETWORK_API_REGEX = /\b(?:requests\.(?:get|post|put|delete|patch|head|options|request|Session)|urllib\.request|urllib3|http\.client|httpx\.|aiohttp\.|pycurl\.|socket\.(?:socket|create_connection)|ftplib\.|smtplib\.|fetch\s*\(|axios(?:\.[a-z]+)?\s*\(|https?\.(?:get|request)\s*\(|net\.(?:connect|createConnection)\s*\(|tls\.connect\s*\(|dgram\.createSocket\s*\(|new\s+WebSocket\s*\(|new\s+XMLHttpRequest\s*\()/i;
+const URL_SCHEME_REGEX = /\b(?:https?|ftp|sftp|wss?):\/\/[^\s'"`<>)]+/gi;
+const PROTECTED_SYSTEM_PREFIXES = ['/etc/', '/var/', '/usr/', '/bin/', '/sbin/', '/root/', '/home/', '/opt/', '/proc/', '/sys/', 'c:/windows', 'c:/users/', 'c:/program files'];
 
 export class AgentSecurityGuard {
     private mutations: AgentMutationRecord[] = [];
@@ -144,6 +157,172 @@ export class AgentSecurityGuard {
         }
     }
 
+    private static resolveWorkspaceRoots(workspaceRoots?: string[]): string[] {
+        const rawRoots = workspaceRoots && workspaceRoots.length > 0
+            ? workspaceRoots
+            : (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
+        return rawRoots.filter(Boolean).map(r => {
+            const resolved = path.resolve(r);
+            try {
+                return fs.realpathSync(resolved);
+            } catch {
+                return resolved;
+            }
+        });
+    }
+
+    private static isPathInsideRoots(candidatePath: string, resolvedRoots: string[]): boolean {
+        if (!candidatePath || resolvedRoots.length === 0) return false;
+        const isWin = process.platform === 'win32';
+        let resolved = path.resolve(candidatePath);
+        try {
+            if (fs.existsSync(resolved)) {
+                resolved = fs.realpathSync(resolved);
+            }
+        } catch {}
+
+        return resolvedRoots.some(root => {
+            const c = isWin ? resolved.toLowerCase() : resolved;
+            const r = isWin ? root.toLowerCase() : root;
+            return c === r || c.startsWith(r + path.sep);
+        });
+    }
+
+    private static isLoopbackUrl(urlStr: string): boolean {
+        try {
+            const parsed = new URL(urlStr);
+            const host = parsed.hostname.toLowerCase();
+            return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+        } catch {
+            return false;
+        }
+    }
+
+    public static checkUnauthorizedWebCalls(text: string, isScript: boolean = false): { allowed: boolean; reason?: string } {
+        if (!text) return { allowed: true };
+
+        // 1. Check explicit URLs (http://, https://, ftp://, ws://, etc.)
+        URL_SCHEME_REGEX.lastIndex = 0;
+        const urls = text.match(URL_SCHEME_REGEX) || [];
+        for (const u of urls) {
+            if (!AgentSecurityGuard.isLoopbackUrl(u)) {
+                return {
+                    allowed: false,
+                    reason: `Unauthorized external web call to '${u}' is forbidden during execution. Use the web search tool when enabled instead.`
+                };
+            }
+        }
+
+        // 2. Check network CLI clients (curl, wget, iwr, irm, nc, ssh, scp, etc.)
+        if (NETWORK_CLI_REGEX.test(text)) {
+            const hasOnlyLoopbackUrl = urls.length > 0 && urls.every(u => AgentSecurityGuard.isLoopbackUrl(u));
+            if (!hasOnlyLoopbackUrl) {
+                return {
+                    allowed: false,
+                    reason: 'Unauthorized network/web client command (curl/wget/iwr/nc/ssh/etc.) is blocked during execution. Use the web search tool when enabled instead.'
+                };
+            }
+        }
+
+        // 3. Check remote git / package URL installs
+        if (/\b(?:git\s+(?:clone|fetch|pull|ls-remote)|(?:pip|pip3)\s+install\s+[^\r\n]*(?:git\+|https?:\/\/)|npm\s+install\s+[^\r\n]*(?:git\+|https?:\/\/))/i.test(text)) {
+            return {
+                allowed: false,
+                reason: 'Remote repository/package network downloads are forbidden during execution.'
+            };
+        }
+
+        // 4. Check programmatic HTTP/socket APIs inside scripts or inline execution
+        if (isScript || /\b(?:python|python3|node)\s+-[ce]\b/i.test(text)) {
+            if (SCRIPT_NETWORK_API_REGEX.test(text)) {
+                const hasOnlyLoopbackUrl = urls.length > 0 && urls.every(u => AgentSecurityGuard.isLoopbackUrl(u));
+                if (!hasOnlyLoopbackUrl) {
+                    return {
+                        allowed: false,
+                        reason: 'Unauthorized programmatic web/socket call inside script is forbidden. Use the web search tool when enabled instead.'
+                    };
+                }
+            }
+        }
+
+        return { allowed: true };
+    }
+
+    public static checkWorkspaceBoundaryInText(text: string, workspaceRoots?: string[]): { valid: boolean; reason?: string } {
+        if (!text) return { valid: true };
+        const roots = AgentSecurityGuard.resolveWorkspaceRoots(workspaceRoots);
+
+        if (/(?:^|[;&|(\s])(?:cd|chdir|pushd|Set-Location|sl)\s+(?:\/|~|\.\.|[A-Za-z]:[\\/])/im.test(text)) {
+            const cdMatch = text.match(/(?:^|[;&|(\s])(?:cd|chdir|pushd|Set-Location|sl)\s+(['"]?)([^'"\r\n;&|]+)\1/im);
+            const target = cdMatch?.[2]?.trim() || '';
+            if (!target || target.startsWith('~') || target.startsWith('..') || !AgentSecurityGuard.isPathInsideRoots(target, roots)) {
+                return {
+                    valid: false,
+                    reason: `Changing directory outside the workspace ('${target || '..'}') is forbidden.`
+                };
+            }
+        }
+
+        if (/(?:^|[\s'"`=(,;:])\.\.(?:\/|\\|\s|$|['"`])/m.test(text)) {
+            return {
+                valid: false,
+                reason: "Path traversal ('..') escaping the workspace is forbidden."
+            };
+        }
+
+        if (/(?:~\/|~\\|\$HOME\b|\$\{HOME\}|\$env:(?:HOME|USERPROFILE|APPDATA|LOCALAPPDATA)\b|%(?:USERPROFILE|HOMEPATH|APPDATA|LOCALAPPDATA|WINDIR|SYSTEMROOT)%)/i.test(text)) {
+            return {
+                valid: false,
+                reason: 'Accessing home directory or OS profile environment paths outside the workspace is forbidden.'
+            };
+        }
+
+        if (/file:\/\/|\\\\[A-Za-z0-9._-]+\\[A-Za-z0-9$._-]+/i.test(text)) {
+            return {
+                valid: false,
+                reason: 'file:// URIs and UNC network paths are forbidden.'
+            };
+        }
+
+        // Check protected system directories and external absolute paths
+        const cleanedForPaths = text
+            .replace(URL_SCHEME_REGEX, ' ')
+            .replace(/(?:^|\s)--?[a-zA-Z0-9_-]+=/g, ' ');
+
+        const absPathRegex = /(?:^|[\s'"`=(,;:])((?:[A-Za-z]:[\\/]|\/(?!(?:c|d|e|f|n|q|r|s|v|x|y|z)\b(?:\s|$)))[^\s'"`<>|;&,);]+)/g;
+        let pm: RegExpExecArray | null;
+        while ((pm = absPathRegex.exec(cleanedForPaths)) !== null) {
+            const candidate = pm[1].trim();
+            if (!candidate || candidate === '/dev/null' || candidate === '/') {
+                if (candidate === '/') {
+                    return { valid: false, reason: `Access to root path '/' outside the workspace is forbidden.` };
+                }
+                continue;
+            }
+            // Ignore common CLI flags like /s /q /f /c on Windows or regexes
+            if (/^\/[a-zA-Z]{1,3}$/.test(candidate)) continue;
+
+            const normCand = candidate.replace(/\\/g, '/').toLowerCase();
+            if (PROTECTED_SYSTEM_PREFIXES.some(pref => normCand.startsWith(pref))) {
+                return {
+                    valid: false,
+                    reason: `Access to system/external path '${candidate}' outside the workspace is forbidden.`
+                };
+            }
+
+            if (path.isAbsolute(candidate) || /^[A-Za-z]:[\\/]/.test(candidate)) {
+                if (roots.length > 0 && !AgentSecurityGuard.isPathInsideRoots(candidate, roots)) {
+                    return {
+                        valid: false,
+                        reason: `Access to absolute path '${candidate}' outside the workspace is forbidden.`
+                    };
+                }
+            }
+        }
+
+        return { valid: true };
+    }
+
     public static validateWorkspacePath(rawPath: string, workspaceRoot?: vscode.WorkspaceFolder): { valid: boolean; reason?: string } {
         const prot = AgentSecurityGuard.isProtectedPath(rawPath);
         if (prot.protected) {
@@ -154,15 +333,10 @@ export class AgentSecurityGuard {
             return { valid: false, reason: `Network/UNC or file:// URI '${rawPath}' is forbidden.` };
         }
         if (path.isAbsolute(rawPath) || /^[a-zA-Z]:[\\/]/.test(rawPath)) {
-            const resolved = path.resolve(rawPath).toLowerCase();
-            const roots = workspaceRoot
-                ? [workspaceRoot.uri.fsPath]
-                : (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
-            const isInside = roots.some(r => {
-                const rootNorm = path.resolve(r).toLowerCase();
-                return resolved === rootNorm || resolved.startsWith(rootNorm + path.sep);
-            });
-            if (!isInside) {
+            const roots = AgentSecurityGuard.resolveWorkspaceRoots(
+                workspaceRoot ? [workspaceRoot.uri.fsPath] : undefined
+            );
+            if (!AgentSecurityGuard.isPathInsideRoots(rawPath, roots)) {
                 return { valid: false, reason: `Access to full/absolute path '${rawPath}' outside the workspace is forbidden.` };
             }
         }
@@ -195,7 +369,7 @@ export class AgentSecurityGuard {
         return { protected: false };
     }
 
-    public static analyzeShellCommand(command: string, level: AgentSecurityLevel): CommandAnalysisResult {
+    public static analyzeShellCommand(command: string, level: AgentSecurityLevel, workspaceRoots?: string[]): CommandAnalysisResult {
         const cmd = (command || '').trim();
         if (!cmd) {
             return { decision: 'block', reason: 'Empty shell command.', severity: 'critical' };
@@ -205,6 +379,24 @@ export class AgentSecurityGuard {
             if (rule.regex.test(cmd)) {
                 return { decision: 'block', reason: rule.reason, severity: 'critical' };
             }
+        }
+
+        if (/(?:base64\s+(?:-d|--decode)\s*\|\s*(?:ba)?sh|\bInvoke-Expression\b|\biex\b\s+[^\r\n]*(?:http|iwr|irm|DownloadString))/i.test(cmd)) {
+            return { decision: 'block', reason: 'Obfuscated or remote payload execution is forbidden.', severity: 'critical' };
+        }
+
+        if (/\.lollms[\\/](?:knowledge\.ttl|memory|briefing|discussions|external_links\.json)/i.test(cmd)) {
+            return { decision: 'block', reason: 'Tampering with internal .lollms memory/briefing/knowledge files via shell is forbidden.', severity: 'critical' };
+        }
+
+        const boundaryCheck = AgentSecurityGuard.checkWorkspaceBoundaryInText(cmd, workspaceRoots);
+        if (!boundaryCheck.valid) {
+            return { decision: 'block', reason: boundaryCheck.reason || 'Workspace boundary violation.', severity: 'critical' };
+        }
+
+        const webCheck = AgentSecurityGuard.checkUnauthorizedWebCalls(cmd, false);
+        if (!webCheck.allowed) {
+            return { decision: 'block', reason: webCheck.reason || 'Unauthorized web call blocked.', severity: 'critical' };
         }
 
         for (const rule of RISKY_COMMAND_PATTERNS) {
@@ -227,11 +419,43 @@ export class AgentSecurityGuard {
         return { decision: 'allow', reason: 'Command passed deterministic safety rules.', severity: 'low' };
     }
 
-    public static analyzeScriptContent(content: string, scriptPath: string, level: AgentSecurityLevel): { decision: 'allow' | 'confirm' | 'block'; reason: string; matchedLines: string[] } {
+    public static analyzeScriptContent(content: string, scriptPath: string, level: AgentSecurityLevel, workspaceRoots?: string[]): { decision: 'allow' | 'confirm' | 'block'; reason: string; matchedLines: string[] } {
         if (!content) {
             return { decision: 'allow', reason: 'Empty script.', matchedLines: [] };
         }
+
         const lines = content.split(/\r?\n/);
+        const blockedLines: string[] = [];
+        const blockReasons = new Set<string>();
+
+        const boundaryCheck = AgentSecurityGuard.checkWorkspaceBoundaryInText(content, workspaceRoots);
+        if (!boundaryCheck.valid) {
+            blockReasons.add(boundaryCheck.reason || 'Workspace boundary violation.');
+        }
+
+        const webCheck = AgentSecurityGuard.checkUnauthorizedWebCalls(content, true);
+        if (!webCheck.allowed) {
+            blockReasons.add(webCheck.reason || 'Unauthorized web call blocked.');
+        }
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            for (const rule of SCRIPT_HARD_BLOCK_PATTERNS) {
+                if (rule.regex.test(line)) {
+                    blockedLines.push(`L${i + 1}: ${line.trim()}`);
+                    blockReasons.add(rule.reason);
+                }
+            }
+        }
+
+        if (blockReasons.size > 0) {
+            return {
+                decision: 'block',
+                reason: `Security policy blocked '${scriptPath}': ${Array.from(blockReasons).join('; ')}`,
+                matchedLines: blockedLines
+            };
+        }
+
         const matchedLines: string[] = [];
         const reasons = new Set<string>();
 
@@ -252,7 +476,7 @@ export class AgentSecurityGuard {
             }
             return {
                 decision: 'confirm',
-                reason: `Script '${scriptPath}' contains potentially destructive filesystem calls: ${summary}`,
+                reason: `Script '${scriptPath}' contains potentially sensitive operations: ${summary}`,
                 matchedLines
             };
         }
@@ -266,6 +490,47 @@ export class AgentSecurityGuard {
         }
 
         return { decision: 'allow', reason: 'Script passed static safety scan.', matchedLines: [] };
+    }
+
+    public static validateExecution(
+        codeOrCommand: string,
+        lang: string,
+        options: { workspaceRoots?: string[]; level?: AgentSecurityLevel; scriptPath?: string } = {}
+    ): { allowed: boolean; decision: 'allow' | 'confirm' | 'block'; reason: string; matchedLines?: string[] } {
+        const level = options.level || 'guarded';
+        const roots = options.workspaceRoots || (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
+        if (roots.length === 0) {
+            return { allowed: false, decision: 'block', reason: 'No active workspace folder; execution is forbidden outside a workspace.' };
+        }
+
+        const normLang = (lang || 'bash').toLowerCase().trim();
+        const isShellLang = ['bash', 'sh', 'shell', 'zsh', 'fish', 'powershell', 'pwsh', 'cmd', 'bat', 'batch'].includes(normLang);
+
+        if (isShellLang) {
+            const shellRes = AgentSecurityGuard.analyzeShellCommand(codeOrCommand, level, roots);
+            if (shellRes.decision === 'block') {
+                return { allowed: false, decision: 'block', reason: shellRes.reason };
+            }
+            const scriptRes = AgentSecurityGuard.analyzeScriptContent(codeOrCommand, options.scriptPath || `<execute_code:${normLang}>`, level, roots);
+            if (scriptRes.decision === 'block') {
+                return { allowed: false, decision: 'block', reason: scriptRes.reason, matchedLines: scriptRes.matchedLines };
+            }
+            const finalDecision = shellRes.decision === 'confirm' || scriptRes.decision === 'confirm' ? 'confirm' : 'allow';
+            return {
+                allowed: finalDecision === 'allow',
+                decision: finalDecision,
+                reason: finalDecision === 'confirm' ? (shellRes.decision === 'confirm' ? shellRes.reason : scriptRes.reason) : 'Passed execution guard.',
+                matchedLines: scriptRes.matchedLines
+            };
+        }
+
+        const scriptRes = AgentSecurityGuard.analyzeScriptContent(codeOrCommand, options.scriptPath || `<execute_code:${normLang}>`, level, roots);
+        return {
+            allowed: scriptRes.decision === 'allow',
+            decision: scriptRes.decision,
+            reason: scriptRes.reason,
+            matchedLines: scriptRes.matchedLines
+        };
     }
 
     public static validateWriteContent(

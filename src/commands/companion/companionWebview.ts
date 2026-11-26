@@ -763,6 +763,38 @@ function renderMessageContent(messageId: string, rawContent: any, isFinal: boole
         }
         return;
     }
+
+    // ── Assistant message rendering ──
+    let assistantText = '';
+    if (typeof rawContent === 'string') {
+        assistantText = rawContent;
+    } else if (Array.isArray(rawContent)) {
+        assistantText = rawContent.filter((p: any) => p && p.type === 'text').map((p: any) => p.text || '').join('\n');
+    } else if (rawContent != null) {
+        assistantText = String(rawContent);
+    }
+
+    contentDiv.style.whiteSpace = '';
+    if (!assistantText) {
+        contentDiv.innerHTML = isFinal ? '' : '<span class="streaming-cursor">▍</span>';
+        return;
+    }
+
+    let assistantHtml = '';
+    try {
+        assistantHtml = (marked as any).parse(assistantText);
+        if (assistantHtml && typeof (assistantHtml as any).then === 'function') {
+            assistantHtml = `<pre>${escapeHtml(assistantText)}</pre>`;
+        }
+    } catch {
+        assistantHtml = `<pre>${escapeHtml(assistantText)}</pre>`;
+    }
+    const safeHtml = sanitizer.sanitize(String(assistantHtml || ''), SANITIZE_CONFIG);
+    contentDiv.innerHTML = safeHtml + (isFinal ? '' : '<span class="streaming-cursor">▍</span>');
+
+    contentDiv.querySelectorAll('pre code').forEach((block: any) => {
+        try { Prism.highlightElement(block); } catch { /* ignore highlight errors */ }
+    });
 }
 
 function createMessageElement(role: 'user' | 'assistant', messageId: string, rawContent: any): HTMLElement {
@@ -1099,6 +1131,7 @@ function renderChat(history: any[], streamingText: string) {
 
     const empty = container.querySelector('.empty-state');
     if (empty) empty.remove();
+    hideThinkingIndicator();
 
     if (validHistory.length > 0) {
         activeContentBuffer = validHistory
@@ -1182,9 +1215,48 @@ function setLoadingState(isLoading: boolean) {
             sendBtn.classList.remove('is-stopping');
             sendBtn.title = 'Send Message (Enter)';
             sendBtn.innerHTML = '<span class="codicon codicon-send"></span>';
+            hideThinkingIndicator();
             promptInput?.focus();
         }
     }
+}
+
+function showThinkingIndicator() {
+    const container = getMessagesContainer();
+    if (!container) return;
+    document.querySelector('.companion-thinking')?.remove();
+    const empty = container.querySelector('.empty-state');
+    if (empty) empty.remove();
+    const el = document.createElement('div');
+    el.className = 'companion-thinking';
+    el.innerHTML = `<div class="message assistant-message<think>
+-message"><div class="message-avatar"><span class="codicon codicon-loading codicon-modifier-spin"></span></div><div class="message-body"><div class="message-header"><span class="role-name" style="color:var(--vscode-charts-green);">Lollms Companion</span></div><div class="thinking-dots">Thinking<span>.</span><span>.</span><span>.</span></div></div></div>`;
+    container.appendChild(el);
+    container.scrollTop = container.scrollHeight;
+}
+
+function hideThinkingIndicator() {
+    document.querySelector('.companion-thinking')?.remove();
+}
+
+function appendStreamingChunk(text: string) {
+    if (!text) return;
+    const container = getMessagesContainer();
+    if (!container) return;
+    const emptyState = container.querySelector('.empty-state');
+    if (emptyState) emptyState.remove();
+    hideThinkingIndicator();
+    let streamWrapper = document.querySelector(`.message-wrapper[data-message-id='companion_streaming']`) as HTMLElement | null;
+    if (!streamWrapper) {
+        streamWrapper = createMessageElement('assistant', 'companion_streaming', '');
+        container.appendChild(streamWrapper);
+    }
+    const accumulated = (streamWrapper.dataset.accumulated || '') + text;
+    streamWrapper.dataset.accumulated = accumulated;
+    const msgDiv = streamWrapper.querySelector('.message') as HTMLElement | null;
+    if (msgDiv) msgDiv.dataset.originalContent = JSON.stringify(accumulated);
+    renderMessageContent('companion_streaming', accumulated, false);
+    container.scrollTop = container.scrollHeight;
 }
 
 function handleApplyAllResult(message: any) {
@@ -1208,6 +1280,11 @@ function handleApplyAllResult(message: any) {
 
         const applyBtn = card.querySelector('.apply-mutation-btn, .apply-btn') as HTMLButtonElement | null;
         const undoBtn = card.querySelector('.undo-mutation-btn') as HTMLButtonElement | null;
+        const buttonsToReset = Array.from(card.querySelectorAll('.apply-mutation-btn, .apply-btn')) as HTMLButtonElement[];
+        const hunkTab = card.querySelector('.hunk-tab.status-active, .hunk-tab.active') as HTMLElement | null;
+        const activePane = card.querySelector('.hunk-pane.active') as HTMLElement | null;
+        const hunkApplyBtn = activePane ? (activePane.querySelector('.apply-btn') as HTMLButtonElement | null) : null;
+        const hunkUndoBtn = activePane ? (activePane.querySelector('.undo-hunk-btn') as HTMLButtonElement | null) : null;
 
         if (message.success) {
             if (messageId && !isNaN(blockIndex)) {
@@ -1346,6 +1423,7 @@ function submitPrompt() {
     renderPendingImages();
 
     setLoadingState(true);
+    showThinkingIndicator();
     vscode.postMessage({ command: 'submitPrompt', text, images: imagesToSend });
     if (promptInput) {
         promptInput.value = '';
@@ -1388,6 +1466,19 @@ function initCompanionUI() {
     const clearBtn = document.getElementById('clear-chat-btn');
     const copyBtn = document.getElementById('copy-full-btn');
     const historyBtn = document.getElementById('toggle-history-btn');
+    const modelSelect = document.getElementById('companion-model-select') as HTMLSelectElement | null;
+    if (modelSelect) {
+        const refreshModelsBtn = document.getElementById('refresh-models-btn');
+        if (refreshModelsBtn) {
+            refreshModelsBtn.addEventListener('click', () => {
+                vscode.postMessage({ type: 'getModels' });
+            });
+        }
+        vscode.postMessage({ type: 'getModels' });
+        modelSelect.addEventListener('change', () => {
+            vscode.postMessage({ command: 'selectModel', model: modelSelect.value });
+        });
+    }
     const closeSidebarBtn = document.getElementById('close-sidebar-btn');
     const clearHistoryBtn = document.getElementById('clear-history-btn');
     const overlay = document.querySelector('.sidebar-overlay');
@@ -1551,17 +1642,43 @@ function initCompanionUI() {
             }
             case 'setLoading':
                 setLoadingState(!!msg.isLoading);
-                if (!msg.isLoading) {
+                if (msg.isLoading) {
+                    showThinkingIndicator();
+                } else {
                     streamingBufferPending = null;
-                    const staleStream = document.querySelector(`.message-wrapper[data-message-id='companion_streaming']`);
+                    hideThinkingIndicator();
+                    const staleStream = document.querySelector(`.message-wrapper[data-message-id='companion_streaming']`) as HTMLElement | null;
                     if (staleStream) {
-                        staleStream.remove();
+                        const accumulated = staleStream.dataset.accumulated || '';
+                        if (accumulated.trim()) {
+                            const finalId = 'companion_final_' + Date.now();
+                            staleStream.dataset.messageId = finalId;
+                            const msgDiv = staleStream.querySelector('.message') as HTMLElement | null;
+                            if (msgDiv) msgDiv.dataset.originalContent = JSON.stringify(accumulated);
+                            renderMessageContent(finalId, accumulated, true);
+                        } else {
+                            staleStream.remove();
+                        }
                     }
                 }
+                break;
+            case 'appendChunk':
+            case 'streamText':
+            case 'streamChunk':
+            case 'chunk':
+            case 'token':
+                appendStreamingChunk(msg.text || msg.chunk || '');
                 break;
             case 'updateChat':
                 renderChat(msg.history || [], msg.streamingText || '');
                 break;
+            case 'updateModels': {
+                const sel = document.getElementById('companion-model-select') as HTMLSelectElement | null;
+                if (sel && Array.isArray(msg.models)) {
+                    sel.innerHTML = msg.models.map((m: any) => `<option value="${escapeHtml(m.id)}"${m.id === msg.selected ? ' selected' : ''}>${escapeHtml(m.name || m.id)}</option>`).join('');
+                }
+                break;
+            }
             case 'renderResponse':
                 if (msg.text) {
                     renderChat([{ id: 'companion_single', role: 'assistant', content: msg.text }], '');

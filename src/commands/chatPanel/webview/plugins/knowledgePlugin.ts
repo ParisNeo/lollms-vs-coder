@@ -15,10 +15,11 @@ export const loadKnowledgePlugin: TagPlugin = {
     tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<load_knowledge\b[^>]*?>([\s\S]*?)<\/load_knowledge>/gim,
     render: (match, context) => {
         const sectionPath = (match[1] || "").trim();
-        const blockId = `load-kn-${context.messageId}-${Date.now().toString(36)}`;
+        const blockId = `load-kn-${context.messageId}-${Math.random().toString(36).substring(7)}`;
+        const encodedPayload = encodeURIComponent(JSON.stringify({ path: sectionPath }));
 
         return `
-        <div class="file-operation-block load-knowledge-card" id="${blockId}" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-blue); border-radius: 8px; margin: 10px 0; overflow: hidden;">
+        <div class="file-operation-block load-knowledge-card assistant-executable-card" id="${blockId}" data-action-type="load_knowledge" data-path="${escapeAttr(sectionPath)}" data-payload="${encodedPayload}" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-blue); border-radius: 8px; margin: 10px 0; overflow: hidden;">
             <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-size: 11px; font-weight: bold; border-bottom: 1px solid var(--vscode-widget-border);">
                 <div style="display: flex; align-items: center; gap: 8px;">
                     <i class="codicon codicon-book" style="color: var(--vscode-charts-blue);"></i>
@@ -26,13 +27,15 @@ export const loadKnowledgePlugin: TagPlugin = {
                 </div>
                 <span class="file-token-badge weight-light">[KNOWLEDGE.md]</span>
             </div>
-            <div class="expansion-body" style="padding: 10px 12px; display: flex; align-items: center; justify-content: space-between;">
+            <div class="expansion-body" style="padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
                 <div style="font-family: var(--vscode-editor-font-family); font-size: 11px; font-weight: 600;">
                     <code>${sanitizer.sanitize(sectionPath)}</code>
                 </div>
-                <button type="button" class="code-action-btn apply-btn btn-trigger-load-knowledge" data-path="${escapeAttr(sectionPath)}" style="height: 24px; font-size: 10px; padding: 0 8px;">
-                    <i class="codicon codicon-folder-opened"></i> Load Section
-                </button>
+                <div style="display: flex; gap: 6px; align-items: center;">
+                    <button type="button" class="code-action-btn apply-btn btn-trigger-load-knowledge" data-path="${escapeAttr(sectionPath)}" style="height: 24px; font-size: 10px; padding: 0 8px;">
+                        <i class="codicon codicon-folder-opened"></i> Load Section
+                    </button>
+                </div>
             </div>
         </div>`;
     },

@@ -1416,6 +1416,18 @@ private _cachedTreeString: string | null = null;
         : this.contextStateProvider.getIncludedFiles();
     result.projectName = path.basename(activeFolders[0].uri.fsPath);
 
+    // Reconcile stale structure-only states: any file the live ContextStateProvider reports
+    // as 'included' (e.g. after an <unmute_files> on a [D] structure-only file) must render
+    // full content even when capabilities.includedFiles / mutedFiles still carry a stale snapshot.
+    const liveIncludedPaths = new Set<string>();
+    if (this.contextStateProvider && !options?.leanMode) {
+        for (const f of this.contextStateProvider.getIncludedFiles()) {
+            if (f.path && f.state === 'included') {
+                liveIncludedPaths.add(this.normalize(f.path).toLowerCase().replace(/^\.?\/+/, ''));
+            }
+        }
+    }
+
     let useRLM = false;
     if (options?.allowRLM && options?.modelName) {
       try {
@@ -1448,7 +1460,8 @@ private _cachedTreeString: string | null = null;
     result.text += `2. **Possessed Files (DO NOT RE-REQUEST)**: You already possess the complete source code for all **${contextFiles.length}** file(s) marked **\`[C]\`** under 'LOADED FILE CONTENTS'. Calling \`<add_files_to_context>\` or \`read_file\` for possessed files is STRICTLY FORBIDDEN and wastes context tokens.\n`;
     if (!isExportContext) {
         result.text += `3. **Privilege Full Code via Unmute (<unmute_files>)**:
-- Calling \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` directly transitions any file from either **Muted (\`[M]\`)** OR **Structure-Only (\`[D]\`)** to **Full Code (\`[C]\`)**.
+- Calling \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` directly and completely transitions any file from either **Muted (\`[M]\`)** OR **Structure-Only (\`[D]\`)** to **Full Code (\`[C]\`)** — the structure block is fully replaced by the complete file source in one shot.
+- **Structure [D] → Full Code [C] Transition**: If a file is currently at \`[D]\` structure mode and you need its full source code (to inspect implementation or apply edits), simply call \`<unmute_files>\` on it. That is the exclusive and cheapest path from [D] to [C]; there is no need to re-run \`<load_structure>\` — the structure is completely replaced by the full file content.
 - Always **privilege using unmute (full code)** whenever you are not heavily constrained by token budget. Generating structure from code requires complex AST parsing and takes extra time.
 - If you need to inspect or modify code and context space allows, output \`<unmute_files>\` to load the complete file immediately.\n`;
         result.text += `4. **Use Structure Mode (<load_structure>) ONLY When Heavily Constrained**:
@@ -1471,7 +1484,7 @@ private _cachedTreeString: string | null = null;
     result.text += `- **\`[C]\` (Full Content Loaded)**: Full source code is ALREADY in memory under 'LOADED FILE CONTENTS'. Ready for editing.\n`;
     if (!isExportContext) {
         result.text += `- **\`[M]\` (Muted in Context)**: Content is muted (0 tokens, still listed in the tree). Use \`<mute_files>\\npath/to/file.ext\\n</mute_files>\` to deliberately release budget, and \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` to restore full code (\`[C]\`).\n`;
-        result.text += `- **\`[D]\` (Structure / Definitions Only)**: Only signatures/structure are loaded. Calling \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` upgrades this file directly from structure-only to full code (\`[C]\`). Keep structure only when context is too bloated or files are reference-only.\n`;
+        result.text += `- **\`[D]\` (Structure / Definitions Only)**: Only signatures/structure are loaded. Calling \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` completely replaces the structure block with the full file source (\`[C]\`) — this is the correct promotion path from structure to full code. Keep structure only when context is too bloated or files are reference-only.\n`;
     } else {
         result.text += `- **\`[D]\` (Structure / Definitions Only)**: Only signatures/structure are loaded for reference.\n`;
     }
@@ -1695,7 +1708,13 @@ private _cachedTreeString: string | null = null;
         }
 
         const namespacedPath = fileEntry.path;
-        const contextState = fileEntry.state;
+        const cfKey = this.normalize(fileEntry.path).toLowerCase().replace(/^\.?\/+/, '');
+        const liveIncluded = liveIncludedPaths.has(cfKey);
+        // A structure-only [D] entry that the live provider now marks as 'included' (unmuted)
+        // must render as full content [C] — the structure block is fully replaced.
+        const contextState = (liveIncluded && (fileEntry.state === 'definitions-only' || fileEntry.state === 'structure'))
+          ? 'included'
+          : fileEntry.state;
         const fileUri = resolution.uri;
         const relativePath = resolution.relativePath;
 
@@ -1713,7 +1732,8 @@ private _cachedTreeString: string | null = null;
           const { arePathsEqual } = require('./utils');
           const isMuted = mutedFiles.some((m: string) => arePathsEqual(m, relativePath) || arePathsEqual(m, headerPath));
 
-          if (isMuted) {
+          // If the live provider reports this file as 'included' (unmuted), trust the provider over a stale mute snapshot.
+          if (isMuted && !liveIncluded) {
             continue;
           }
 
@@ -2388,7 +2408,21 @@ ${text.substring(0, 10000)}`;
 
   public async searchWorkspaceContent(
     query: string,
-    options: { matchCase?: boolean, wholeWord?: boolean, include?: string, exclude?: string, literal?: boolean; bypassGate?: boolean } = { matchCase: false, wholeWord: false },
+    options: {
+      matchCase?: boolean;
+      wholeWord?: boolean;
+      include?: string;
+      exclude?: string;
+      literal?: boolean;
+      bypassGate?: boolean;
+      maxResults?: number;
+      maxPerFile?: number;
+      contextLines?: number;
+      multiline?: boolean;
+      invertMatch?: boolean;
+      wholeLine?: boolean;
+      fileExtensions?: string | string[];
+    } = { matchCase: false, wholeWord: false },
     signal?: AbortSignal
   ): Promise<{ path: string, snippet: string, line?: string }[]> {
     // --- GREP ACCESS CONTROL GATE (Bypassed for Librarian & Diagnostic Agents) ---
@@ -2402,7 +2436,9 @@ ${text.substring(0, 10000)}`;
     if (!cleanQuery) return [];
 
     const results: { path: string, snippet: string, line?: string }[] = [];
-    const maxResults = 100;
+    const maxResults = Math.max(1, options.maxResults ?? 100);
+    const maxPerFile = Math.max(1, options.maxPerFile ?? 3);
+    const contextLines = Math.max(0, options.contextLines ?? 0);
     const workspaceFolders = vscode.workspace.workspaceFolders || [];
     if (workspaceFolders.length === 0) return [];
 
@@ -2433,9 +2469,13 @@ ${text.substring(0, 10000)}`;
     for (const folder of workspaceFolders) {
       if (signal?.aborted || results.length >= maxResults) break;
 
-      let gitGrepArgs = `-n -I --max-count=3 --context=0`;
+      let gitGrepArgs = `-n -I --max-count=${maxPerFile}`;
+      if (contextLines > 0) gitGrepArgs += ` -C ${contextLines}`;
       if (!options.matchCase) gitGrepArgs += ` -i`;
       if (options.wholeWord) gitGrepArgs += ` -w`;
+      if (options.wholeLine) gitGrepArgs += ` -x`;
+      if (options.invertMatch) gitGrepArgs += ` -v`;
+      if (options.multiline) gitGrepArgs += ` -U --multiline`;
 
       let isRegexValid = true;
       if (!options.literal) {
@@ -2457,6 +2497,15 @@ ${text.substring(0, 10000)}`;
       if (options.include) {
         const cleanInc = options.include.split(',').map(p => `"${p.trim().replace(/^['"]|['"]$/g, '')}"`).filter(Boolean);
         pathspecs.push(...cleanInc);
+      }
+      if (options.fileExtensions) {
+        const extList = Array.isArray(options.fileExtensions)
+          ? options.fileExtensions
+          : options.fileExtensions.split(',').map(e => e.trim()).filter(Boolean);
+        for (const rawExt of extList) {
+          const ext = rawExt.startsWith('.') ? rawExt : `.${rawExt}`;
+          pathspecs.push(`"**/*${ext}"`);
+        }
       }
       if (options.exclude) {
         const cleanExc = options.exclude.split(',').map(p => `":!${p.trim().replace(/^['"]|['"]$/g, '')}"`).filter(Boolean);
@@ -2502,10 +2551,26 @@ ${text.substring(0, 10000)}`;
     return results;
   }
 
+  public isToolDisabledByUser(toolName: string): boolean {
+    const caps = this.contextStateProvider?.context.globalState.get<any>('lollms_last_capabilities') || {};
+    const normalized = (toolName || '').toLowerCase().trim();
+    if (/^(grep|grep_search|search_files|searchworkspace)$/.test(normalized) && caps.grepEnabled === false) return true;
+    if (normalized === 'sparql' && caps.sparqlEnabled === false) return true;
+    return false;
+  }
+
+  public getDisabledToolNames(): string[] {
+    const caps = this.contextStateProvider?.context.globalState.get<any>('lollms_last_capabilities') || {};
+    const disabled: string[] = [];
+    if (caps.grepEnabled === false) disabled.push('grep', 'grep_search', 'search_files');
+    if (caps.sparqlEnabled === false) disabled.push('sparql');
+    return disabled;
+  }
+
   private async searchFolderFallback(
     folder: vscode.WorkspaceFolder,
     query: string,
-    options: { matchCase?: boolean; wholeWord?: boolean; include?: string; exclude?: string; literal?: boolean },
+    options: { matchCase?: boolean; wholeWord?: boolean; include?: string; exclude?: string; literal?: boolean; maxPerFile?: number; contextLines?: number; multiline?: boolean; invertMatch?: boolean; wholeLine?: boolean; fileExtensions?: string | string[] },
     results: { path: string; snippet: string; line?: string }[],
     maxResults: number,
     signal?: AbortSignal
@@ -2513,14 +2578,12 @@ ${text.substring(0, 10000)}`;
     if (signal?.aborted || results.length >= maxResults) return;
 
     let searchRegex: RegExp;
-    const flags = options.matchCase ? 'g' : 'gi';
+    const flags = (options.matchCase ? 'g' : 'gi') + (options.multiline ? 's' : '');
     try {
-      if (options.literal) {
-        const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        searchRegex = new RegExp(options.wholeWord ? `\\b${escaped}\\b` : escaped, flags);
-      } else {
-        searchRegex = new RegExp(options.wholeWord ? `\\b(${query})\\b` : query, flags);
-      }
+      let pattern = options.literal ? query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : query;
+      if (options.wholeWord) pattern = `\\b(?:${pattern})\\b`;
+      if (options.wholeLine) pattern = `^(?:${pattern})$`;
+      searchRegex = new RegExp(pattern, flags);
     } catch {
       const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       searchRegex = new RegExp(escaped, flags);
@@ -2529,7 +2592,13 @@ ${text.substring(0, 10000)}`;
     const excludePattern = '**/{.git,node_modules,venv,.venv,env,.env,out,dist,bin,build,.lollms,__pycache__,.pytest_cache,.mypy_cache,.ruff_cache,.tox,data,data_workspace,.idea,.vscode,.next,.nuxt,.turbo,.cache}/**';
 
     let includePattern = '**/*';
-    if (options.include) {
+    if (options.fileExtensions) {
+      const exts = Array.isArray(options.fileExtensions) ? options.fileExtensions : options.fileExtensions.split(',').map(e => e.trim()).filter(Boolean);
+      if (exts.length > 0) {
+        const dirPart = options.include ? `**/${options.include}/` : '**/';
+        includePattern = `${dirPart}*.{${exts.map(e => e.replace(/^\./, '')).join(',')}}`;
+      }
+    } else if (options.include) {
       includePattern = options.include.includes('*') ? options.include : `**/${options.include}/**`;
     }
 
@@ -2562,20 +2631,32 @@ ${text.substring(0, 10000)}`;
         const text = Buffer.from(bytes).toString('utf8');
         const lines = text.split('\n');
 
+        const perFileCap = Math.max(1, options.maxPerFile ?? 3);
+        const contextLines = Math.max(0, options.contextLines ?? 0);
+        const invert = options.invertMatch === true;
         for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
           if (results.length >= maxResults) break;
           const line = lines[lineIdx];
           searchRegex.lastIndex = 0;
+          const isMatch = searchRegex.test(line);
 
-          if (searchRegex.test(line)) {
+          if ((invert && !isMatch) || (!invert && isMatch)) {
             const displayPath = isMultiRoot ? `${folder.name}/${relPath}` : relPath;
+            let snippet: string;
+            if (contextLines > 0) {
+              const start = Math.max(0, lineIdx - contextLines);
+              const end = Math.min(lines.length - 1, lineIdx + contextLines);
+              snippet = lines.slice(start, end + 1).join('\n');
+            } else {
+              snippet = line.trim().substring(0, 200);
+            }
             results.push({
               path: displayPath,
               line: String(lineIdx + 1),
-              snippet: line.trim().substring(0, 200)
+              snippet: snippet.length > 500 ? snippet.substring(0, 500) + '...' : snippet
             });
             const hitsForFile = results.filter(r => r.path === displayPath).length;
-            if (hitsForFile >= 3) break;
+            if (hitsForFile >= perFileCap) break;
           }
         }
       } catch {}

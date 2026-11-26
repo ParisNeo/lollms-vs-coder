@@ -687,6 +687,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
             }
+            case 'executeActionResult':
             case 'executeActionEnd': {
                 setHudActivityState('internal');
                 const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
@@ -724,16 +725,31 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
                 }
 
-                // If this tool corresponds to a specific card on the page, mark its button as applied/done
-                if (message.actionId) {
-                    const block = document.getElementById(message.actionId);
+                // Mark the corresponding scouting/tool card as executed and render preview if available
+                const targetCardId = message.blockId || message.actionId;
+                if (targetCardId) {
+                    const block = document.getElementById(targetCardId);
                     if (block) {
-                        block.querySelectorAll('.run-local-tool-btn, .run-reprompt-tool-btn, .apply-btn').forEach((btn: any) => {
+                        if (message.success) {
+                            block.classList.add('status-completed');
+                        }
+                        block.querySelectorAll('.run-local-tool-btn, .run-reprompt-tool-btn, .exec-scouting-local-btn, .exec-scouting-reprompt-btn, .run-local-sparql-btn, .run-reprompt-sparql-btn, .add-btn, .unmute-btn, .load-structure-btn, .execute-sym-btn, .execute-peek-reprompt-btn, .btn-trigger-load-knowledge, .file-op-btn, .apply-btn').forEach((btn: any) => {
                             btn.disabled = true;
+                            btn.style.opacity = '1';
                             btn.classList.remove('apply-btn');
                             btn.classList.add('applied');
-                            btn.innerHTML = '<i class="codicon codicon-check"></i> Executed';
+                            btn.innerHTML = message.success
+                                ? '<i class="codicon codicon-check"></i> Applied'
+                                : '<i class="codicon codicon-error"></i> Failed';
                         });
+
+                        if (message.output) {
+                            const previewEl = block.querySelector('.card-output-preview, .sparql-results-render-area, .peek-render-preview') as HTMLElement | null;
+                            if (previewEl) {
+                                previewEl.style.display = 'block';
+                                previewEl.innerHTML = sanitizer.sanitize((window as any).marked.parse(String(message.output)) as string);
+                            }
+                        }
                     }
                 }
 
@@ -755,7 +771,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         execBtn.classList.remove('apply-btn');
                         execBtn.classList.add('applied');
                         execBtn.style.setProperty('background', 'var(--vscode-charts-green)', 'important');
-                        execBtn.innerHTML = `<span class="codicon codicon-check"></span> All Tools Executed (${message.totalCount})`;
+                        execBtn.innerHTML = `<span class="codicon codicon-check"></span> All Applied in Order (${message.totalCount})`;
+                    }
+                    const applyOnlyBtn = wrapper?.querySelector(`#apply-only-actions-${message.messageId}`) as HTMLButtonElement;
+                    if (applyOnlyBtn) {
+                        applyOnlyBtn.disabled = true;
+                        applyOnlyBtn.classList.add('applied');
+                        applyOnlyBtn.innerHTML = `<i class="codicon codicon-check"></i> Applied (${message.totalCount})`;
                     }
                     const badge = wrapper?.querySelector(`#tools-status-badge-${message.messageId}`) as HTMLElement;
                     if (badge) {

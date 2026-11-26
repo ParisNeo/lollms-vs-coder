@@ -31,7 +31,7 @@ import { projectMemoryPlugin } from './plugins/projectMemoryPlugin.js';
 import { milestonePlugin } from './plugins/milestonePlugin.js';
 import { processingPlugin, findBalancedProcessingBlockRanges } from './plugins/processingPlugin.js';
 import { formPlugin, parseAndRenderFormContent } from './plugins/formPlugin.js';
-import { fileOpPlugin, fileMutationPlugin, unpackDirectoryPlugin, peekFilesPlugin, loadStructurePlugin, showSymbolPlugin, runTestsPlugin, readExternalFilePlugin, executeCodePlugin } from './plugins/fileOpPlugin.js';
+import { fileOpPlugin, fileMutationPlugin, unpackDirectoryPlugin, peekFilesPlugin, loadStructurePlugin, showSymbolPlugin, runTestsPlugin, readExternalFilePlugin, executeCodePlugin, grepPlugin, manageSymbolsPlugin, readFullFilePlugin } from './plugins/fileOpPlugin.js';
 import { breakpointPlugin } from './plugins/breakpointPlugin.js';
 import { imageAssetPlugin } from './plugins/imageAssetPlugin.js';
 import { imageGenPlugin } from './plugins/imageGenPlugin.js';
@@ -67,6 +67,9 @@ export function ensurePluginsInitialized() {
         peekFilesPlugin,
         loadStructurePlugin,
         showSymbolPlugin,
+        manageSymbolsPlugin,
+        grepPlugin,
+        readFullFilePlugin,
         runTestsPlugin,
         readExternalFilePlugin,
         executeCodePlugin,
@@ -3065,10 +3068,14 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     // Detect Multi-Step updates structure in the current response
     const detectedMultiSteps = detectMultiStepsInContent(sourceText);
 
-    const isAutoExecutionActive = state.capabilities?.autoExecuteScouting === true || state.capabilities?.autoExecuteCode === true || state.capabilities?.autoExecuteTools === true || (state.capabilities as any)?.autoMode === true || state.capabilities?.agentMode === true || state.capabilities?.dynamicMode === true;
+    const isScoutingAuto = state.capabilities?.agentMode === true ||
+        state.capabilities?.dynamicMode === true ||
+        (state.capabilities?.autoExecuteScouting !== undefined
+            ? state.capabilities.autoExecuteScouting === true
+            : state.capabilities?.autoExecuteTools === true);
 
-    // Reserve slot for Tools & Actions card; populated strictly from verified rendered DOM cards after parsing
-    if (isFinal && !isAutoExecutionActive) {
+    // Reserve slot for Tools & Scouting Actions card in manual scouting mode; populated strictly from verified rendered DOM cards after parsing
+    if (isFinal && !isScoutingAuto) {
         finalHtml += `<div class="tools-card-slot" id="tools-card-slot-${messageId}"></div>`;
     }
 
@@ -3337,20 +3344,25 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         checkAndSyncMessageAppliedState(messageId);
     }
 
-    // Populate Tools & Actions Execution Card strictly from actual rendered DOM action cards
-    if (isFinal && !isAutoExecutionActive) {
+    // Populate Scouting & Tools Execution Card strictly from actual rendered DOM action cards in document order
+    if (isFinal && !isScoutingAuto) {
         const toolsSlot = contentDiv.querySelector(`#tools-card-slot-${messageId}`) as HTMLElement;
         if (toolsSlot) {
             const realActions = getExecutableActionsForMessage(messageId);
-            const copyableTypes = new Set(['add_context', 'unmute', 'show_symbol', 'load_structure', 'peek']);
+            const copyableTypes = new Set([
+                'add_context', 'unmute', 'read_full_file', 'show_symbol', 'load_structure',
+                'manage_symbols', 'peek', 'read_external_file', 'grep', 'sparql',
+                'unpack_directory', 'load_knowledge', 'mute', 'remove_context'
+            ]);
             const copyableActions = realActions.filter(a => copyableTypes.has(a.type));
 
             const hasExecutableTools = realActions.length > 0;
             const hasCopyableActions = copyableActions.length > 0;
 
             if (hasExecutableTools || hasCopyableActions) {
-                const toolCountText = realActions.length === 1 ? '1 tool' : `${realActions.length} tools`;
-                const execBtnText = realActions.length === 1 ? 'Execute Tool' : `Execute All Tools (${realActions.length})`;
+                const toolCountText = realActions.length === 1 ? '1 action' : `${realActions.length} actions`;
+                const execBtnText = realActions.length === 1 ? 'Apply &amp; Reprompt' : `Apply All in Order &amp; Reprompt (${realActions.length})`;
+                const applyOnlyText = realActions.length === 1 ? 'Apply Only' : `Apply All in Order (${realActions.length})`;
                 const copyBtnText = copyableActions.length > 1
                     ? `Copy All (${copyableActions.length})`
                     : `Copy Content`;
@@ -3360,19 +3372,22 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                         <div style="font-weight:800; font-size:12px; color:var(--vscode-charts-purple, #9b59b6); display:flex; align-items:center; gap:6px;">
                             <i class="codicon codicon-tools" style="color:var(--vscode-charts-purple, #9b59b6); font-size:14px;"></i>
-                            <span>Tools &amp; Actions to Execute (<span id="tools-count-${messageId}">${toolCountText}</span>)</span>
+                            <span>Scouting &amp; Actions Queue (<span id="tools-count-${messageId}">${toolCountText}</span>)</span>
                         </div>
-                        <span class="mode-badge active tools-status-badge" id="tools-status-badge-${messageId}" style="font-size:9.5px; padding:2px 8px; background:var(--vscode-charts-purple, #9b59b6); color:white;">Ready to Execute</span>
+                        <span class="mode-badge active tools-status-badge" id="tools-status-badge-${messageId}" style="font-size:9.5px; padding:2px 8px; background:var(--vscode-charts-purple, #9b59b6); color:white;">Ordered Queue</span>
                     </div>
                     <div class="tools-pills-container" id="tools-pills-${messageId}" style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;"></div>
                     <div class="tools-results-list" id="tools-results-${messageId}" style="width:100%; margin-top:8px; display:flex; flex-direction:column; gap:4px;"></div>
                     <div class="execute-all-wrapper" style="margin-top: 10px; padding: 0; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                         ${hasExecutableTools ? `
-                        <button class="code-action-btn apply-btn execute-all-actions-btn" id="execute-all-actions-${messageId}" style="flex:1; min-width:200px; height:34px; font-weight:bold; justify-content:center; background:var(--vscode-charts-purple, #9b59b6) !important; color:white !important;">
+                        <button class="code-action-btn apply-btn execute-all-actions-btn" id="execute-all-actions-${messageId}" style="flex:1; min-width:190px; height:34px; font-weight:bold; justify-content:center; background:var(--vscode-charts-purple, #9b59b6) !important; color:white !important;" title="Execute all scouting &amp; action blocks sequentially in exact document order and send results back to the AI">
                             <span class="codicon codicon-play"></span> ${execBtnText}
+                        </button>
+                        <button class="code-action-btn secondary-btn apply-only-actions-btn" id="apply-only-actions-${messageId}" style="height:34px; font-weight:bold; justify-content:center; padding:0 12px; border:1px solid var(--vscode-charts-purple, #9b59b6); color:var(--vscode-foreground); display:inline-flex; align-items:center; gap:6px;" title="Apply all scouting &amp; context blocks in exact document order without reprompting the AI">
+                            <i class="codicon codicon-check-all"></i> ${applyOnlyText}
                         </button>` : ''}
                         ${hasCopyableActions ? `
-                        <button class="code-action-btn secondary-btn copy-all-actions-btn" id="copy-all-actions-${messageId}" style="height:34px; font-weight:bold; justify-content:center; padding:0 14px; border:1px solid var(--vscode-charts-blue); color:var(--vscode-textLink-foreground); display:inline-flex; align-items:center; gap:6px;" title="Copy all requested files, unmuted files, symbols, structures, and peeks to clipboard">
+                        <button class="code-action-btn secondary-btn copy-all-actions-btn" id="copy-all-actions-${messageId}" style="height:34px; font-weight:bold; justify-content:center; padding:0 14px; border:1px solid var(--vscode-charts-blue); color:var(--vscode-textLink-foreground); display:inline-flex; align-items:center; gap:6px;" title="Copy all requested files, symbols, structures, peeks, grep hits, and SPARQL outputs in order to clipboard">
                             <i class="codicon codicon-copy"></i> ${copyBtnText}
                         </button>` : ''}
                         <div class="tools-progress-container" id="tools-progress-container-${messageId}" style="width:100%; height:4px; background:var(--vscode-widget-border); border-radius:2px; margin-top:8px; overflow:hidden; display:none;">
@@ -3383,44 +3398,58 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
                 syncToolsListRows(messageId);
 
+                const dispatchOrderedBatch = (shouldReprompt: boolean) => {
+                    const actions = getExecutableActionsForMessage(messageId);
+                    if (!Array.isArray(actions) || actions.length === 0) return;
+
+                    const executeAllBtn = toolsSlot.querySelector(`#execute-all-actions-${messageId}`) as HTMLButtonElement | null;
+                    const applyOnlyBtn = toolsSlot.querySelector(`#apply-only-actions-${messageId}`) as HTMLButtonElement | null;
+                    if (executeAllBtn) executeAllBtn.disabled = true;
+                    if (applyOnlyBtn) applyOnlyBtn.disabled = true;
+                    const activeTrigger = shouldReprompt ? executeAllBtn : applyOnlyBtn;
+                    if (activeTrigger) {
+                        activeTrigger.innerHTML = `<span class="codicon codicon-sync spin"></span> Applying in Order (0/${actions.length})...`;
+                    }
+
+                    const progressContainer = toolsSlot.querySelector(`#tools-progress-container-${messageId}`) as HTMLElement;
+                    const progressBar = toolsSlot.querySelector(`#tools-progress-bar-${messageId}`) as HTMLElement;
+                    if (progressContainer) progressContainer.style.display = 'block';
+                    if (progressBar) {
+                        progressBar.style.width = '0%';
+                        progressBar.style.background = 'var(--vscode-charts-purple, #9b59b6)';
+                    }
+
+                    actions.forEach(a => {
+                        const row = toolsSlot.querySelector(`#tool-row-${messageId}-${a.index}`);
+                        if (row && !a.isExecuted) {
+                            const iconEl = row.querySelector('.status-icon');
+                            if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-primitive-dot" style="opacity:0.5;"></span>';
+                        }
+                    });
+
+                    vscode.postMessage({
+                        command: 'executeAllMessageActions',
+                        messageId,
+                        reprompt: shouldReprompt,
+                        actions: actions.map(a => ({
+                            id: a.id,
+                            index: a.index,
+                            type: a.type,
+                            name: a.name,
+                            payload: a.payload,
+                            blockId: a.blockId
+                        }))
+                    });
+                };
+
                 const executeAllBtn = toolsSlot.querySelector(`#execute-all-actions-${messageId}`) as HTMLButtonElement;
                 if (executeAllBtn) {
-                    executeAllBtn.onclick = () => {
-                        const actions = getExecutableActionsForMessage(messageId);
-                        if (!Array.isArray(actions) || actions.length === 0) return;
+                    executeAllBtn.onclick = () => dispatchOrderedBatch(true);
+                }
 
-                        executeAllBtn.disabled = true;
-                        executeAllBtn.innerHTML = `<span class="codicon codicon-sync spin"></span> Executing Tools (0/${actions.length})...`;
-
-                        const progressContainer = toolsSlot.querySelector(`#tools-progress-container-${messageId}`) as HTMLElement;
-                        const progressBar = toolsSlot.querySelector(`#tools-progress-bar-${messageId}`) as HTMLElement;
-                        if (progressContainer) progressContainer.style.display = 'block';
-                        if (progressBar) {
-                            progressBar.style.width = '0%';
-                            progressBar.style.background = 'var(--vscode-charts-purple, #9b59b6)';
-                        }
-
-                        actions.forEach(a => {
-                            const row = toolsSlot.querySelector(`#tool-row-${messageId}-${a.index}`);
-                            if (row && !a.isExecuted) {
-                                const iconEl = row.querySelector('.status-icon');
-                                if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-primitive-dot" style="opacity:0.5;"></span>';
-                            }
-                        });
-
-                        vscode.postMessage({
-                            command: 'executeAllMessageActions',
-                            messageId,
-                            actions: actions.map(a => ({
-                                id: a.id,
-                                index: a.index,
-                                type: a.type,
-                                name: a.name,
-                                payload: a.payload,
-                                blockId: a.blockId
-                            }))
-                        });
-                    };
+                const applyOnlyBtn = toolsSlot.querySelector(`#apply-only-actions-${messageId}`) as HTMLButtonElement;
+                if (applyOnlyBtn) {
+                    applyOnlyBtn.onclick = () => dispatchOrderedBatch(false);
                 }
 
                 const copyAllBtn = toolsSlot.querySelector(`#copy-all-actions-${messageId}`) as HTMLButtonElement;
@@ -3533,7 +3562,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 export interface ExecutableActionItem {
     id: string;
     index: number;
-    type: 'tool' | 'peek' | 'add_context' | 'unmute' | 'load_structure' | 'show_symbol' | 'run_tests' | 'read_external_file';
+    type: 'tool' | 'peek' | 'add_context' | 'unmute' | 'mute' | 'remove_context' | 'load_structure' | 'manage_symbols' | 'show_symbol' | 'read_full_file' | 'read_external_file' | 'grep' | 'unpack_directory' | 'sparql' | 'load_knowledge' | 'run_tests';
     name: string;
     label: string;
     detail: string;
@@ -3554,16 +3583,345 @@ export function getExecutableActionsForMessage(messageId: string): ExecutableAct
 
     let actionIndex = 0;
 
-    // 1. Tool blocks (<lollms_tool>, .lollms-tool-card, .generation-block)
-    contentDiv.querySelectorAll('.lollms-tool-card, .lollms-tool-block, .generation-block[data-tool-name], .generation-block').forEach((block: any) => {
+    // Single unified querySelectorAll guarantees exact DOM/document order across ALL scouting & tool blocks
+    const orderedNodes = Array.from(contentDiv.querySelectorAll([
+        '.lollms-tool-card',
+        '.lollms-tool-block',
+        '.generation-block[data-tool-name]',
+        '.sparql-block',
+        '.assistant-executable-card',
+        '.context-expansion-block',
+        '.unmute-files-block',
+        '.load-knowledge-card'
+    ].join(', ')));
+
+    orderedNodes.forEach((node: any) => {
         try {
-            const toolBtn = block.querySelector('[data-tool]');
-            const toolName = block.dataset.toolName || toolBtn?.dataset.tool || 'unknown_tool';
+            if (!node || node.closest('.processing-block')) return;
+            const actionType = node.dataset?.actionType || '';
+
+            if (node.classList.contains('context-expansion-block')) {
+                const files = JSON.parse(node.dataset.files || '[]');
+                if (Array.isArray(files) && files.length > 0) {
+                    const addBtn = node.querySelector('.add-btn');
+                    const isDone = addBtn?.classList.contains('applied') || addBtn?.disabled;
+                    actions.push({
+                        id: `add-ctx-${messageId}-${actionIndex}`,
+                        index: actionIndex++,
+                        type: 'add_context',
+                        name: 'add_files_to_context',
+                        label: `Add to Context (${files.length})`,
+                        detail: files.join(', '),
+                        icon: 'codicon-cloud-download',
+                        color: 'var(--vscode-charts-blue)',
+                        blockId: node.id,
+                        payload: files,
+                        isExecuted: !!isDone
+                    });
+                }
+                return;
+            }
+
+            if (actionType === 'unmute' || node.classList.contains('unmute-files-block')) {
+                const rawPaths = node.dataset.paths || node.dataset.payload;
+                const paths = JSON.parse(decodeURIComponent(rawPaths || '[]'));
+                if (Array.isArray(paths) && paths.length > 0) {
+                    const unmuteBtn = node.querySelector('.unmute-btn');
+                    const isDone = unmuteBtn?.classList.contains('applied') || unmuteBtn?.disabled;
+                    actions.push({
+                        id: `unmute-${messageId}-${actionIndex}`,
+                        index: actionIndex++,
+                        type: 'unmute',
+                        name: 'unmute_files',
+                        label: `Unmute Files (${paths.length})`,
+                        detail: paths.join(', '),
+                        icon: 'codicon-eye',
+                        color: 'var(--vscode-charts-green)',
+                        blockId: node.id,
+                        payload: paths,
+                        isExecuted: !!isDone
+                    });
+                }
+                return;
+            }
+
+            if (actionType === 'mute' || actionType === 'remove_context') {
+                const rawPaths = node.dataset.paths || node.dataset.payload;
+                const paths = JSON.parse(decodeURIComponent(rawPaths || '[]'));
+                if (Array.isArray(paths) && paths.length > 0) {
+                    const btn = node.querySelector('.file-op-btn');
+                    const isDone = btn?.classList.contains('applied') || btn?.disabled;
+                    const isMute = actionType === 'mute';
+                    actions.push({
+                        id: `${actionType}-${messageId}-${actionIndex}`,
+                        index: actionIndex++,
+                        type: isMute ? 'mute' : 'remove_context',
+                        name: isMute ? 'mute_files' : 'remove_files_from_context',
+                        label: `${isMute ? 'Mute' : 'Remove'} Files (${paths.length})`,
+                        detail: paths.join(', '),
+                        icon: isMute ? 'codicon-eye-closed' : 'codicon-clear-all',
+                        color: 'var(--vscode-charts-orange)',
+                        blockId: node.id,
+                        payload: paths,
+                        isExecuted: !!isDone
+                    });
+                }
+                return;
+            }
+
+            if (actionType === 'load_structure') {
+                const raw = node.dataset.files || node.dataset.paths || node.dataset.payload;
+                const files = raw ? JSON.parse(decodeURIComponent(raw)) : (node.dataset.path ? [node.dataset.path] : []);
+                if (Array.isArray(files) && files.length > 0) {
+                    const loadBtn = node.querySelector('.load-structure-btn');
+                    const isDone = node.classList.contains('status-completed') || loadBtn?.classList.contains('applied');
+                    actions.push({
+                        id: `struct-${messageId}-${actionIndex}`,
+                        index: actionIndex++,
+                        type: 'load_structure',
+                        name: 'load_structure',
+                        label: `Load Structure (${files.length})`,
+                        detail: files.join(', '),
+                        icon: 'codicon-symbol-class',
+                        color: 'var(--vscode-charts-blue)',
+                        blockId: node.id,
+                        payload: files,
+                        isExecuted: !!isDone
+                    });
+                }
+                return;
+            }
+
+            if (actionType === 'manage_symbols') {
+                const payload = JSON.parse(decodeURIComponent(node.dataset.payload || '{}'));
+                if (payload.path) {
+                    const btn = node.querySelector('.exec-scouting-local-btn, .exec-scouting-reprompt-btn');
+                    const isDone = node.classList.contains('status-completed') || btn?.classList.contains('applied') || btn?.disabled;
+                    const symSummary = payload.mode
+                        ? `mode=${payload.mode}`
+                        : [
+                            payload.activate?.length ? `+${payload.activate.join(',')}` : '',
+                            payload.deactivate?.length ? `-${payload.deactivate.join(',')}` : ''
+                        ].filter(Boolean).join(' ');
+                    actions.push({
+                        id: `manage-sym-${messageId}-${actionIndex}`,
+                        index: actionIndex++,
+                        type: 'manage_symbols',
+                        name: 'manage_symbols',
+                        label: `Manage Symbols: ${payload.path}`,
+                        detail: `${payload.path}${symSummary ? ` (${symSummary})` : ''}`,
+                        icon: 'codicon-symbol-structure',
+                        color: 'var(--vscode-charts-purple, #9b59b6)',
+                        blockId: node.id,
+                        payload,
+                        isExecuted: !!isDone
+                    });
+                }
+                return;
+            }
+
+            if (actionType === 'show_symbol') {
+                const btn = node.querySelector('.execute-sym-btn');
+                const target = btn?.dataset.target || node.dataset.target || '';
+                const rawSymbols = btn?.dataset.symbols || node.dataset.symbols;
+                let symbolsList: string[] = [];
+                if (rawSymbols) {
+                    try { symbolsList = JSON.parse(decodeURIComponent(rawSymbols)); } catch { symbolsList = [rawSymbols]; }
+                }
+                const symbol = btn?.dataset.symbol || node.dataset.symbol || '';
+                const symLabel = symbolsList.length > 0 ? symbolsList.join(', ') : symbol;
+                const isDone = node.classList.contains('status-completed') || btn?.classList.contains('applied') || btn?.disabled;
+
+                actions.push({
+                    id: `sym-${messageId}-${actionIndex}`,
+                    index: actionIndex++,
+                    type: 'show_symbol',
+                    name: 'show_symbol',
+                    label: `Show Symbol: ${target}`,
+                    detail: symLabel ? `${target} [${symLabel}]` : target,
+                    icon: 'codicon-symbol-method',
+                    color: 'var(--vscode-charts-orange)',
+                    blockId: node.id,
+                    payload: {
+                        target,
+                        symbol: symbol || (symbolsList.length === 1 ? symbolsList[0] : undefined),
+                        symbols: symbolsList.length > 0 ? symbolsList : undefined
+                    },
+                    isExecuted: !!isDone
+                });
+                return;
+            }
+
+            if (actionType === 'peek') {
+                const payload = JSON.parse(decodeURIComponent(node.dataset.payload || '[]'));
+                const paths = Array.isArray(payload) ? payload.map((p: any) => typeof p === 'string' ? p : p.path).filter(Boolean) : [];
+                const isDone = node.classList.contains('status-completed') || node.querySelector('.execute-peek-reprompt-btn')?.disabled;
+                actions.push({
+                    id: `peek-${messageId}-${actionIndex}`,
+                    index: actionIndex++,
+                    type: 'peek',
+                    name: 'peek_files',
+                    label: `Peek Files (${paths.length})`,
+                    detail: paths.join(', '),
+                    icon: 'codicon-eye',
+                    color: 'var(--vscode-charts-green)',
+                    blockId: node.id,
+                    payload,
+                    isExecuted: !!isDone
+                });
+                return;
+            }
+
+            if (actionType === 'read_full_file') {
+                const payload = JSON.parse(decodeURIComponent(node.dataset.payload || '{}'));
+                const btn = node.querySelector('.exec-scouting-local-btn, .exec-scouting-reprompt-btn');
+                const isDone = node.classList.contains('status-completed') || btn?.classList.contains('applied') || btn?.disabled;
+                actions.push({
+                    id: `read-full-${messageId}-${actionIndex}`,
+                    index: actionIndex++,
+                    type: 'read_full_file',
+                    name: 'read_full_file',
+                    label: `Read File: ${payload.path || ''}`,
+                    detail: payload.path || '',
+                    icon: 'codicon-file-code',
+                    color: 'var(--vscode-charts-green)',
+                    blockId: node.id,
+                    payload,
+                    isExecuted: !!isDone
+                });
+                return;
+            }
+
+            if (actionType === 'read_external_file') {
+                const payload = JSON.parse(decodeURIComponent(node.dataset.payload || '{}'));
+                const btn = node.querySelector('.read-ext-reprompt-btn, .read-ext-local-btn');
+                const isDone = node.classList.contains('status-completed') || btn?.classList.contains('applied');
+                actions.push({
+                    id: `read-ext-${messageId}-${actionIndex}`,
+                    index: actionIndex++,
+                    type: 'read_external_file',
+                    name: 'read_external_file',
+                    label: `Read External (${payload.path || 'list'})`,
+                    detail: payload.path || 'List linked external files',
+                    icon: 'codicon-link',
+                    color: 'var(--vscode-charts-teal, #00b4d8)',
+                    blockId: node.id,
+                    payload,
+                    isExecuted: !!isDone
+                });
+                return;
+            }
+
+            if (actionType === 'grep') {
+                const payload = JSON.parse(decodeURIComponent(node.dataset.payload || '{}'));
+                const btn = node.querySelector('.exec-scouting-local-btn, .exec-scouting-reprompt-btn');
+                const isDone = node.classList.contains('status-completed') || btn?.classList.contains('applied') || btn?.disabled;
+                actions.push({
+                    id: `grep-${messageId}-${actionIndex}`,
+                    index: actionIndex++,
+                    type: 'grep',
+                    name: 'grep',
+                    label: `Grep: ${payload.pattern || ''}`,
+                    detail: payload.path ? `"${payload.pattern}" in ${payload.path}` : `"${payload.pattern || ''}"`,
+                    icon: 'codicon-search',
+                    color: 'var(--vscode-charts-blue)',
+                    blockId: node.id,
+                    payload,
+                    isExecuted: !!isDone
+                });
+                return;
+            }
+
+            if (actionType === 'unpack_directory') {
+                const payload = JSON.parse(decodeURIComponent(node.dataset.payload || '{}'));
+                const dirs = Array.isArray(payload.dirs) ? payload.dirs : [];
+                const btn = node.querySelector('.exec-scouting-local-btn, .exec-scouting-reprompt-btn');
+                const isDone = node.classList.contains('status-completed') || btn?.classList.contains('applied') || btn?.disabled;
+                actions.push({
+                    id: `unpack-${messageId}-${actionIndex}`,
+                    index: actionIndex++,
+                    type: 'unpack_directory',
+                    name: 'unpack_directory',
+                    label: `Unpack Directory (${dirs.length})`,
+                    detail: dirs.join(', '),
+                    icon: 'codicon-folder-opened',
+                    color: 'var(--vscode-charts-blue)',
+                    blockId: node.id,
+                    payload,
+                    isExecuted: !!isDone
+                });
+                return;
+            }
+
+            if (actionType === 'sparql' || node.classList.contains('sparql-block')) {
+                const query = decodeURIComponent(node.dataset.query || '');
+                const btn = node.querySelector('.run-local-sparql-btn, .run-reprompt-sparql-btn');
+                const isDone = node.classList.contains('status-completed') || btn?.classList.contains('applied') || btn?.disabled;
+                actions.push({
+                    id: `sparql-${messageId}-${actionIndex}`,
+                    index: actionIndex++,
+                    type: 'sparql',
+                    name: 'sparql',
+                    label: 'SPARQL Query',
+                    detail: query.split('\n')[0].trim().slice(0, 80),
+                    icon: 'codicon-graph',
+                    color: 'var(--vscode-charts-purple, #9b59b6)',
+                    blockId: node.id,
+                    payload: { query },
+                    isExecuted: !!isDone
+                });
+                return;
+            }
+
+            if (actionType === 'load_knowledge' || node.classList.contains('load-knowledge-card')) {
+                const secPath = node.dataset.path || '';
+                const btn = node.querySelector('.btn-trigger-load-knowledge');
+                const isDone = node.classList.contains('status-completed') || btn?.disabled;
+                actions.push({
+                    id: `load-kn-${messageId}-${actionIndex}`,
+                    index: actionIndex++,
+                    type: 'load_knowledge',
+                    name: 'load_knowledge',
+                    label: 'Load Knowledge',
+                    detail: secPath,
+                    icon: 'codicon-book',
+                    color: 'var(--vscode-charts-blue)',
+                    blockId: node.id,
+                    payload: { path: secPath },
+                    isExecuted: !!isDone
+                });
+                return;
+            }
+
+            if (actionType === 'run_tests') {
+                const payload = JSON.parse(decodeURIComponent(node.dataset.payload || '{}'));
+                const targets = Array.isArray(payload.targets) ? payload.targets : [];
+                const btn = node.querySelector('.run-tests-reprompt-btn, .run-tests-local-btn');
+                const isDone = node.classList.contains('status-completed') || btn?.classList.contains('applied');
+                actions.push({
+                    id: `run-tests-${messageId}-${actionIndex}`,
+                    index: actionIndex++,
+                    type: 'run_tests',
+                    name: 'run_tests',
+                    label: `Run Tests (${targets.join(', ')})`,
+                    detail: `${payload.runner || 'auto'}: ${targets.join(', ')}`,
+                    icon: 'codicon-beaker',
+                    color: 'var(--vscode-charts-green)',
+                    blockId: node.id,
+                    payload,
+                    isExecuted: !!isDone
+                });
+                return;
+            }
+
+            // Generic lollms_tool block
+            const toolBtn = node.querySelector('[data-tool]');
+            const toolName = node.dataset.toolName || toolBtn?.dataset.tool || 'unknown_tool';
             if (toolName === 'unknown_tool' && !toolBtn) return;
 
             let params: any = {};
             try {
-                const rawParams = block.dataset.params || toolBtn?.dataset.params;
+                const rawParams = node.dataset.params || toolBtn?.dataset.params;
                 if (rawParams) params = JSON.parse(rawParams);
             } catch {}
 
@@ -3591,7 +3949,7 @@ export function getExecutableActionsForMessage(messageId: string): ExecutableAct
             }
 
             const isDone = (toolBtn?.disabled === true && (toolBtn?.classList.contains('applied') || toolBtn?.innerHTML.includes('check'))) ||
-                           block.classList.contains('applied');
+                           node.classList.contains('applied');
 
             actions.push({
                 id: `tool-${messageId}-${actionIndex}`,
@@ -3602,190 +3960,9 @@ export function getExecutableActionsForMessage(messageId: string): ExecutableAct
                 detail: detail || 'Execute tool',
                 icon,
                 color,
-                blockId: block.id,
+                blockId: node.id,
                 payload: { name: toolName, params },
                 isExecuted: isDone
-            });
-        } catch {}
-    });
-
-    // 2. Peek files (<peek_files>)
-    contentDiv.querySelectorAll('.assistant-executable-card[data-action-type="peek"]').forEach((card: any) => {
-        try {
-            const payload = JSON.parse(decodeURIComponent(card.dataset.payload || '[]'));
-            const paths = Array.isArray(payload) ? payload.map((p: any) => typeof p === 'string' ? p : p.path).filter(Boolean) : [];
-            const isDone = card.classList.contains('status-completed') || card.querySelector('.execute-peek-reprompt-btn')?.disabled;
-
-            actions.push({
-                id: `peek-${messageId}-${actionIndex}`,
-                index: actionIndex++,
-                type: 'peek',
-                name: 'peek_files',
-                label: `Peek Files (${paths.length})`,
-                detail: paths.join(', '),
-                icon: 'codicon-eye',
-                color: 'var(--vscode-charts-green)',
-                blockId: card.id,
-                payload,
-                isExecuted: !!isDone
-            });
-        } catch {}
-    });
-
-    // 3. Add to Context (<add_files_to_context>)
-    contentDiv.querySelectorAll('.context-expansion-block').forEach((block: any) => {
-        try {
-            const files = JSON.parse(block.dataset.files || '[]');
-            if (Array.isArray(files) && files.length > 0) {
-                const addBtn = block.querySelector('.add-btn');
-                const isDone = addBtn?.classList.contains('applied') || addBtn?.disabled;
-
-                actions.push({
-                    id: `add-ctx-${messageId}-${actionIndex}`,
-                    index: actionIndex++,
-                    type: 'add_context',
-                    name: 'add_files_to_context',
-                    label: `Add to Context (${files.length})`,
-                    detail: files.join(', '),
-                    icon: 'codicon-cloud-download',
-                    color: 'var(--vscode-charts-blue)',
-                    blockId: block.id,
-                    payload: files,
-                    isExecuted: !!isDone
-                });
-            }
-        } catch {}
-    });
-
-    // 4. Unmute files (<unmute_files>)
-    contentDiv.querySelectorAll('.unmute-files-block, [data-action-type="unmute"]').forEach((block: any) => {
-        try {
-            const rawPaths = block.dataset.paths || block.dataset.payload;
-            const paths = JSON.parse(decodeURIComponent(rawPaths || '[]'));
-            if (Array.isArray(paths) && paths.length > 0) {
-                const unmuteBtn = block.querySelector('.unmute-btn');
-                const isDone = unmuteBtn?.classList.contains('applied') || unmuteBtn?.disabled;
-
-                actions.push({
-                    id: `unmute-${messageId}-${actionIndex}`,
-                    index: actionIndex++,
-                    type: 'unmute',
-                    name: 'unmute_files',
-                    label: `Unmute Files (${paths.length})`,
-                    detail: paths.join(', '),
-                    icon: 'codicon-eye',
-                    color: 'var(--vscode-charts-green)',
-                    blockId: block.id,
-                    payload: paths,
-                    isExecuted: !!isDone
-                });
-            }
-        } catch {}
-    });
-
-    // 5. Load structure (<load_structure>)
-    contentDiv.querySelectorAll('.assistant-executable-card[data-action-type="load_structure"]').forEach((card: any) => {
-        try {
-            const raw = card.dataset.files || card.dataset.paths || card.dataset.payload;
-            const files = raw ? JSON.parse(decodeURIComponent(raw)) : (card.dataset.path ? [card.dataset.path] : []);
-            if (Array.isArray(files) && files.length > 0) {
-                const loadBtn = card.querySelector('.load-structure-btn');
-                const isDone = card.classList.contains('status-completed') || loadBtn?.classList.contains('applied');
-
-                actions.push({
-                    id: `struct-${messageId}-${actionIndex}`,
-                    index: actionIndex++,
-                    type: 'load_structure',
-                    name: 'load_structure',
-                    label: `Load Structure (${files.length})`,
-                    detail: files.join(', '),
-                    icon: 'codicon-symbol-class',
-                    color: 'var(--vscode-charts-blue)',
-                    blockId: card.id,
-                    payload: files,
-                    isExecuted: !!isDone
-                });
-            }
-        } catch {}
-    });
-
-    // 6. Show symbol (<show_symbol>)
-    contentDiv.querySelectorAll('.assistant-executable-card[data-action-type="show_symbol"]').forEach((card: any) => {
-        try {
-            const btn = card.querySelector('.execute-sym-btn');
-            const target = btn?.dataset.target || card.dataset.target || '';
-            const rawSymbols = btn?.dataset.symbols || card.dataset.symbols;
-            let symbolsList: string[] = [];
-            if (rawSymbols) {
-                try { symbolsList = JSON.parse(decodeURIComponent(rawSymbols)); } catch { symbolsList = [rawSymbols]; }
-            }
-            const symbol = btn?.dataset.symbol || card.dataset.symbol || '';
-            const symLabel = symbolsList.length > 0 ? symbolsList.join(', ') : symbol;
-            const isDone = btn?.classList.contains('applied') || btn?.disabled;
-
-            actions.push({
-                id: `sym-${messageId}-${actionIndex}`,
-                index: actionIndex++,
-                type: 'show_symbol',
-                name: 'show_symbol',
-                label: `Show Symbol: ${target}`,
-                detail: symLabel ? `${target} [${symLabel}]` : target,
-                icon: 'codicon-symbol-method',
-                color: 'var(--vscode-charts-orange)',
-                blockId: card.id,
-                payload: {
-                    target,
-                    symbol: symbol || (symbolsList.length === 1 ? symbolsList[0] : undefined),
-                    symbols: symbolsList.length > 0 ? symbolsList : undefined
-                },
-                isExecuted: !!isDone
-            });
-        } catch {}
-    });
-
-    // 7. Run Tests (<run_tests>)
-    contentDiv.querySelectorAll('.assistant-executable-card[data-action-type="run_tests"]').forEach((card: any) => {
-        try {
-            const payload = JSON.parse(decodeURIComponent(card.dataset.payload || '{}'));
-            const targets = Array.isArray(payload.targets) ? payload.targets : [];
-            const btn = card.querySelector('.run-tests-reprompt-btn, .run-tests-local-btn');
-            const isDone = card.classList.contains('status-completed') || btn?.classList.contains('applied');
-
-            actions.push({
-                id: `run-tests-${messageId}-${actionIndex}`,
-                index: actionIndex++,
-                type: 'run_tests',
-                name: 'run_tests',
-                label: `Run Tests (${targets.join(', ')})`,
-                detail: `${payload.runner || 'auto'}: ${targets.join(', ')}`,
-                icon: 'codicon-beaker',
-                color: 'var(--vscode-charts-green)',
-                blockId: card.id,
-                payload,
-                isExecuted: !!isDone
-            });
-        } catch {}
-    });
-
-    // 8. Read External File (<read_external_file>)
-    contentDiv.querySelectorAll('.assistant-executable-card[data-action-type="read_external_file"]').forEach((card: any) => {
-        try {
-            const payload = JSON.parse(decodeURIComponent(card.dataset.payload || '{}'));
-            const btn = card.querySelector('.read-ext-reprompt-btn, .read-ext-local-btn');
-            const isDone = card.classList.contains('status-completed') || btn?.classList.contains('applied');
-
-            actions.push({
-                id: `read-ext-${messageId}-${actionIndex}`,
-                index: actionIndex++,
-                type: 'read_external_file',
-                name: 'read_external_file',
-                label: `Read External (${payload.path || 'list'})`,
-                detail: payload.path || 'List linked external files',
-                icon: 'codicon-link',
-                color: 'var(--vscode-charts-teal, #00b4d8)',
-                blockId: card.id,
-                payload,
-                isExecuted: !!isDone
             });
         } catch {}
     });
@@ -3850,8 +4027,9 @@ export function syncToolsListRows(messageId: string) {
                         ? '<i class="codicon codicon-check" style="color:var(--vscode-charts-green)"></i>' 
                         : '<i class="codicon codicon-primitive-dot" style="opacity:0.5;"></i>'}
                 </span>
+                <span class="tool-order-num" style="font-size:10px; font-weight:700; opacity:0.65; flex-shrink:0;">${act.index + 1}.</span>
                 <span class="tool-icon" style="flex-shrink:0;"><i class="codicon ${act.icon}" style="color:${act.color};"></i></span>
-                <span class="tool-name clickable" title="Click to jump to tool" style="font-weight:bold; font-size:11.5px; color:var(--vscode-textLink-foreground); cursor:pointer; flex-shrink:0;">
+                <span class="tool-name clickable" title="Click to jump to block" style="font-weight:bold; font-size:11.5px; color:var(--vscode-textLink-foreground); cursor:pointer; flex-shrink:0;">
                     ${act.name}
                 </span>
                 <span class="tool-detail" title="${act.detail}" style="font-size:10.5px; opacity:0.8; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; font-family:var(--vscode-editor-font-family, monospace);">

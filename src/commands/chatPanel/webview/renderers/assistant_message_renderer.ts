@@ -31,9 +31,10 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
         safeMessageId.startsWith('lib_') || 
         (wrapper.dataset.personalityName?.includes('Librarian') && !wrapper.dataset.personalityName?.includes('Coder'))
     );
-    const isSystem = !isLibrarian && !isContextShield && (safeMessageId.startsWith('error_') || safeMessageId.startsWith('system_') || wrapper.querySelector('.message')?.classList.contains('system-message'));
+    const isMultiTurnSummary = safeMessageId.startsWith('multi_turn_summary_');
+    const isSystem = !isLibrarian && !isContextShield && !isMultiTurnSummary && (safeMessageId.startsWith('error_') || safeMessageId.startsWith('system_') || wrapper.querySelector('.message')?.classList.contains('system-message'));
 
-    const isAgent = !isUser && !isSystem && !isLibrarian && !isContextShield && (
+    const isAgent = !isUser && !isSystem && !isLibrarian && !isContextShield && !isMultiTurnSummary && (
         state.capabilities?.agentMode === true ||
         document.body.classList.contains('agent-mode-active') ||
         document.body.getAttribute('data-agent-active') === 'true' ||
@@ -44,7 +45,18 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
     );
 
     // Update avatar icon and color theme for Librarian, Context Shield, or Agent
-    if (isContextShield) {
+    if (isMultiTurnSummary) {
+        const avatarDiv = wrapper.querySelector('.message-avatar') as HTMLElement;
+        if (avatarDiv) {
+            avatarDiv.innerHTML = '<span class="codicon codicon-layers" style="color:var(--vscode-charts-blue)"></span>';
+            avatarDiv.style.backgroundColor = 'rgba(0, 122, 204, 0.14)';
+            avatarDiv.style.border = '1px solid var(--vscode-charts-blue)';
+        }
+        if (msgDiv) {
+            msgDiv.classList.remove('system-message');
+            msgDiv.style.borderLeftColor = 'var(--vscode-charts-blue)';
+        }
+    } else if (isContextShield) {
         const avatarDiv = wrapper.querySelector('.message-avatar') as HTMLElement;
         if (avatarDiv) {
             avatarDiv.innerHTML = '<span class="codicon codicon-shield" style="color:var(--vscode-charts-blue)"></span>';
@@ -104,12 +116,12 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
 
         const middleButton = isUser 
             ? `<button class="msg-action-btn regenerate-msg-btn" title="Regenerate Response"><i class="codicon codicon-sync"></i></button>`
-            : ((isSystem || isLibrarian || isAgent) ? '' : `<button class="msg-action-btn run-monitor-btn" title="Run App & Monitor Logs"><i class="codicon codicon-play"></i></button>`);
+            : ((isSystem || isLibrarian || isAgent || isMultiTurnSummary) ? '' : `<button class="msg-action-btn run-monitor-btn" title="Run App & Monitor Logs"><i class="codicon codicon-play"></i></button>`);
 
         // Floating Message Actions HUD
         const actions = document.createElement('div');
         actions.className = 'message-actions';
-        actions.innerHTML = (isSystem || isLibrarian) ? `${collapseActionBtn}${copyButton}${deleteButton}` : `${collapseActionBtn}${editButton}${copyButton}${middleButton}${deleteButton}`;
+        actions.innerHTML = (isSystem || isLibrarian || isMultiTurnSummary) ? `${collapseActionBtn}${copyButton}${deleteButton}` : `${collapseActionBtn}${editButton}${copyButton}${middleButton}${deleteButton}`;
         bodyDiv.appendChild(actions);
 
         // Header Metadata with Collapse Toggle
@@ -123,7 +135,11 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
 
         const roleSpan = document.createElement('span');
         roleSpan.className = 'role-name';
-        if (isContextShield) {
+        if (isMultiTurnSummary) {
+            roleSpan.textContent = '📊 Multi-Turn Run Summary (User Only)';
+            roleSpan.style.color = 'var(--vscode-charts-blue)';
+            roleSpan.style.fontWeight = 'bold';
+        } else if (isContextShield) {
             roleSpan.textContent = '🛡️ Context Shield (Target File Audit)';
             roleSpan.style.color = 'var(--vscode-charts-blue)';
             roleSpan.style.fontWeight = 'bold';
@@ -183,6 +199,8 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
                 const planBlock = wrapper.querySelector('.librarian-plan-card, details.librarian-plan-card');
                 if (planBlock) {
                     pillHtml += `<span class="collapsed-badge plan" style="background:rgba(214,122,13,0.18); color:var(--vscode-charts-orange); border:1px solid rgba(214,122,13,0.35); padding:1px 6px; border-radius:10px; font-size:10px;"><i class="codicon codicon-checklist"></i> Librarian Plan &amp; Findings</span>`;
+                } else if (isMultiTurnSummary) {
+                    pillHtml += `<span class="collapsed-badge" style="background:rgba(0,122,204,0.18); color:var(--vscode-charts-blue); border:1px solid rgba(0,122,204,0.35); padding:1px 6px; border-radius:10px; font-size:10px;"><i class="codicon codicon-layers"></i> Multi-Turn Run Summary</span>`;
                 } else if (isLibrarian) {
                     pillHtml += `<span class="collapsed-badge lib" style="background:rgba(214,122,13,0.18); color:var(--vscode-charts-orange); border:1px solid rgba(214,122,13,0.35); padding:1px 6px; border-radius:10px; font-size:10px;"><i class="codicon codicon-library"></i> Librarian Directive (Findings &amp; Instructions)</span>`;
                 }

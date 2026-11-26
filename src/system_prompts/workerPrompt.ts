@@ -59,7 +59,31 @@ export class CoderPromptBuilder {
             lines.push('- **Auto-Apply Patches (ON)**: Your `<file path="..." action="write|patch|update_symbol|delete_code">` mutations are automatically applied to disk.');
         }
         if (autoScouting) {
-            lines.push('- **Auto-Execute Scouting (ON)**: Context/scouting tags (`<unmute_files>`, `<load_structure>`, `<show_symbol>`, `<manage_symbols>`, `<add_files_to_context>`, `<grep>`, `<sparql>`) execute automatically and return results to you in the next turn.');
+            // 🚫 HUD-AWARE SCOUTING TAGS: Only advertise tags that are actually enabled in the HUD.
+            // Disabled tags (e.g. GREP or SPARQL toggled off) must NEVER be shown to the LLM,
+            // otherwise it retries them in a loop and wastes turns.
+            const grepEnabled = capabilities.grepEnabled !== false;
+            const sparqlEnabled = capabilities.sparqlEnabled !== false;
+
+            const enabledScoutingTags = [
+                '`<unmute_files>`',
+                '`<load_structure>`',
+                '`<show_symbol>`',
+                '`<manage_symbols>`',
+                '`<add_files_to_context>`'
+            ];
+            if (grepEnabled) enabledScoutingTags.push('`<grep>`');
+            if (sparqlEnabled) enabledScoutingTags.push('`<sparql>`');
+
+            lines.push(`- **Auto-Execute Scouting (ON)**: Context/scouting tags (${enabledScoutingTags.join(', ')}) execute automatically and return results to you in the next turn.`);
+
+            const forbiddenScoutingTags: string[] = [];
+            if (!grepEnabled) forbiddenScoutingTags.push('`<grep>`');
+            if (!sparqlEnabled) forbiddenScoutingTags.push('`<sparql>`');
+            if (forbiddenScoutingTags.length > 0) {
+                const isPlural = forbiddenScoutingTags.length > 1;
+                lines.push(`- 🚫 **UNAVAILABLE SCAVENGING TAGS (STRICTLY FORBIDDEN — DEACTIVATED IN HUD)**: ${forbiddenScoutingTags.join(', ')} ${isPlural ? 'are' : 'is'} turned off by the user in the HUD. Emitting ${isPlural ? 'them' : 'it'} will fail and waste a turn. Use only the enabled scouting tags listed above.`);
+            }
         }
         if (allowCodeIssuing) {
             if (autoCode) {
@@ -161,6 +185,17 @@ RULES:
 `;
     }
 
+    public static buildScriptSandboxProtocol(): string {
+        return `
+### 🧪 SCRATCH SCRIPT SANDBOX DISCIPLINE
+Whenever you write-and-execute a script ONLY to test the system, verify an assumption, probe behavior, or debug a hypothesis (a throwaway/scratch script that is NOT part of the user's deliverable):
+- **Write it inside \`.lollms/scripts\` at the workspace root** (create the folder if missing), e.g. \`.lollms/scripts/probe_<name>.py\`. NEVER place scratch scripts inside the user's source tree or workspace root — no pollution.
+- Use a unique, descriptive filename to avoid collisions.
+- **ALWAYS clean up after finishing**: delete the scratch script (and any temporary artifacts it created) once the test/verification is complete so nothing is left behind.
+- This sandbox rule does NOT apply to genuine deliverable files the user explicitly asked you to create.
+`;
+    }
+
     public static build(options: CoderPromptOptions): string {
         try {
             const {
@@ -176,6 +211,7 @@ RULES:
             const userPreferences = rawUserPrefs.trim();
             const userPrefSection = userPreferences ? `\n### 👤 USER PREFERENCES & CODING GUIDELINES\n${userPreferences}\n` : '';
             const mutationProtocol = CoderPromptBuilder.buildFileMutationProtocol(capabilities);
+            const scriptSandboxProtocol = CoderPromptBuilder.buildScriptSandboxProtocol();
             const formProtocol = !isExport ? ((CoderPromptBuilder as any).buildUserInputFormProtocol?.() ?? '') : '';
             const phasedAndInstrumentationProtocol = CoderPromptBuilder.buildPhasedContextAndInstrumentationProtocol({ isExport, isFastMode });
             const composableAutoProtocol = !isExport ? CoderPromptBuilder.buildComposableAutoProtocol(capabilities) : '';
@@ -248,6 +284,7 @@ ${formProtocol}
 ${phasedAndInstrumentationProtocol}
 ${formProtocol}
 ${composableAutoProtocol}
+${scriptSandboxProtocol}
 ${mutationProtocol}
 ${context?.skills ? `\n### 📖 ACTIVE SKILLS\n${context.skills}\n` : ''}
 `;
@@ -338,6 +375,7 @@ ${userPrefSection}
     <mission_briefing action="delete" scope="global" section="obsolete_slug" />
 
 ${composableAutoProtocol}
+${scriptSandboxProtocol}
 ${mutationProtocol}
 ${context?.skills ? `\n### 📖 ACTIVE SKILLS\n${context.skills}\n` : ''}
 `;

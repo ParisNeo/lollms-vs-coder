@@ -30,6 +30,8 @@ export class CompanionPanel {
     private _preApplySnapshots: Map<string, { filePath: string; content: string }> = new Map();
     private _activeAbortController: AbortController | null = null;
     private _htmlCache: string | undefined;
+    private _models: { id: string; name: string }[] = [];
+    private _selectedModel: string = '';
 
     public agentManager: any;
     public discussionManager: any;
@@ -193,6 +195,9 @@ export class CompanionPanel {
                             history: this.chatHistory || [],
                             streamingText: ''
                         });
+                        if (this._models.length > 0) {
+                            this._panel.webview.postMessage({ command: 'updateModels', models: this._models, selected: this._selectedModel });
+                        }
                         break;
                     case 'focusCode':
                         await this.focusCodeInEditor(message.code);
@@ -203,9 +208,15 @@ export class CompanionPanel {
                     case 'submitPrompt':
                         const payload = JSON.stringify({
                             text: message.text || message.query || "",
-                            images: Array.isArray(message.images) ? message.images : undefined
+                            images: Array.isArray(message.images) ? message.images : undefined,
+                            model: this._selectedModel || undefined
                         });
                         this._onDidSubmit.fire(payload);
+                        break;
+                    case 'selectModel':
+                        if (message.model) {
+                            this._selectedModel = message.model;
+                        }
                         break;
                     case 'copyToClipboard':
                         if (message.text) {
@@ -1067,6 +1078,20 @@ export class CompanionPanel {
             images: safeImages
         });
         this._onDidSubmit.fire(payload);
+    }
+
+    public setModels(models: { id: string; name: string }[], selectedId?: string) {
+        this._models = Array.isArray(models) ? models : [];
+        if (selectedId) {
+            this._selectedModel = selectedId;
+        } else if (!this._selectedModel && this._models.length > 0) {
+            this._selectedModel = this._models[0].id;
+        }
+        this._panel.webview.postMessage({ command: 'updateModels', models: this._models, selected: this._selectedModel });
+    }
+
+    public getSelectedModel(): string {
+        return this._selectedModel;
     }
 
     public setContextInfo(info: string, filePath?: string) {

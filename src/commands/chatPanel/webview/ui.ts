@@ -3034,6 +3034,28 @@ export function updateBadges() {
                             partial.autoExecuteTools = state.capabilities.autoExecuteTools;
                             partial.autoMode = (state.capabilities as any).autoMode;
                         }
+                    } else if (key === 'requireExplicitEndTag') {
+                        partial.requireExplicitEndTag = checked;
+                        if (checked) {
+                            partial.autoApply = true;
+                            partial.autoExecuteScouting = true;
+                        }
+                        if (state.capabilities) {
+                            state.capabilities.requireExplicitEndTag = checked;
+                            if (checked) {
+                                state.capabilities.autoApply = true;
+                                state.capabilities.autoExecuteScouting = true;
+                            }
+                            syncLegacyAutoFlags(state.capabilities);
+                            partial.autoExecuteTools = state.capabilities.autoExecuteTools;
+                            partial.autoMode = (state.capabilities as any).autoMode;
+                        }
+                        if (checked) {
+                            const capApply = document.getElementById('cap-autoApply') as HTMLInputElement;
+                            if (capApply) capApply.checked = true;
+                            const capAutoTools = document.getElementById('cap-autoExecuteTools') as HTMLInputElement;
+                            if (capAutoTools) capAutoTools.checked = true;
+                        }
                     } else {
                         partial[key] = checked;
                         if (state.capabilities) {

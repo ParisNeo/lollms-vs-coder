@@ -105,7 +105,7 @@ Translate the provided ${fromLang} script into a ${toLang} script for the user's
         }
     }
 
-    const tempDir = path.join(workspaceRoot, '.lollms', 'temp_scripts');
+    const tempDir = path.join(workspaceRoot, '.lollms', 'scripts');
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
     
     let fullCommand: string;
@@ -259,7 +259,13 @@ Translate the provided ${fromLang} script into a ${toLang} script for the user's
     } catch (err: any) {
         panel.addMessageToDiscussion({ role: 'system', content: `❌ Terminal execution error: ${err.message}` });
     } finally {
-        try { if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath); } catch (err: any) {}
+        try {
+            if (tempFilePath && fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+            // Best-effort: remove the scripts directory if it is now empty so we never pollute the workspace.
+            if (fs.existsSync(tempDir) && fs.readdirSync(tempDir).length === 0) {
+                fs.rmdirSync(tempDir);
+            }
+        } catch (err: any) {}
     }
   }
 }

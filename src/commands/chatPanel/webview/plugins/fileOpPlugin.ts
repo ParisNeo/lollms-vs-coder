@@ -1238,9 +1238,14 @@ export const fileOpPlugin: TagPlugin = {
         }
 
         const isUnmuteType = type === 'unmute_files';
+        const isMuteType = type === 'mute_files';
+        const isRemoveContextType = type === 'remove_files_from_context';
         const isDeleteType = type === 'delete_files';
         const encodedPaths = encodeURIComponent(JSON.stringify(lines));
         const encodedFilesJson = JSON.stringify(lines).replace(/"/g, '&quot;');
+        const actionTypeAttr = isUnmuteType
+            ? 'unmute'
+            : (isMuteType ? 'mute' : (isRemoveContextType ? 'remove_context' : 'file_op'));
 
         const isUnmuteDisabled = isUnmuteType && allFullyActive;
         const actionButtonsHtml = isUnmuteType ? `
@@ -1263,13 +1268,20 @@ export const fileOpPlugin: TagPlugin = {
             </button>
         `);
 
-        const cardExtraClass = isUnmuteType ? 'unmute-files-block assistant-executable-card' : (isDeleteType ? 'delete-files-block' : '');
+        const isAssistantExec = isUnmuteType || isMuteType || isRemoveContextType;
+        const cardExtraClass = isUnmuteType
+            ? 'unmute-files-block assistant-executable-card'
+            : (isMuteType
+                ? 'mute-files-block assistant-executable-card'
+                : (isRemoveContextType
+                    ? 'remove-context-block assistant-executable-card'
+                    : (isDeleteType ? 'delete-files-block' : '')));
         const borderAccent = isUnmuteType
             ? 'border-left: 4px solid var(--vscode-charts-green);'
             : (isDeleteType ? 'border-left: 4px solid var(--vscode-charts-red, #e53935);' : 'border-left: 4px solid var(--vscode-charts-orange);');
 
         return `
-        <div class="file-operation-block ${cardExtraClass}" id="${blockId}" data-action-type="${isUnmuteType ? 'unmute' : 'file_op'}" data-paths="${encodedPaths}" data-payload="${encodedPaths}" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-widget-border); ${borderAccent} border-radius: 8px; margin: 12px 0; overflow: hidden;">
+        <div class="file-operation-block ${cardExtraClass}" id="${blockId}" data-action-type="${isAssistantExec ? actionTypeAttr : 'file_op'}" data-paths="${encodedPaths}" data-payload="${encodedPaths}" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-widget-border); ${borderAccent} border-radius: 8px; margin: 12px 0; overflow: hidden;">
             <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 12px;">
                 <span class="codicon ${icon}" style="${isUnmuteType ? 'color: var(--vscode-charts-green);' : ''}"></span> 
                 <span>${title}</span>
@@ -1398,25 +1410,117 @@ export const fileOpPlugin: TagPlugin = {
     }
 };
 
+function escapeHtmlForOp(str: string): string {
+    return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
 export const unpackDirectoryPlugin: TagPlugin = {
     id: 'unpack_directory',
-    tagPattern: /<unpack_directory\b([^>]*?)>([\s\S]*?)<\/unpack_directory>/gim,
-    render: (match) => {
-        const inner = (match[2] || "").trim();
-        const dirs = inner.split(/[\s\r\n,]+/).map(d => d.trim().replace(/^['"]|['"]$/g, '')).filter(d => d && !d.startsWith('<'));
+    tagPattern: /<unpack_directory\b([^>]*?)(?:\/>|>([\s\S]*?)<\/unpack_directory>)/gim,
+    render: (match, context) => {
+        const attrStr = match[1] || '';
+        const inner = (match[2] || '').trim();
+        const attrDirs: string[] = [];
+        const attrMatch = attrStr.match(/(?:path|dir|folder)=["']([^"']+)["']/i);
+        if (attrMatch) attrDirs.push(attrMatch[1].trim());
+        const innerDirs = inner.split(/[\s\r\n,]+/).map(d => d.trim().replace(/^['"]|['"]$/g, '')).filter(d => d && !d.startsWith('<'));
+        const dirs = Array.from(new Set([...attrDirs, ...innerDirs]));
         if (dirs.length === 0) return null;
+
+        const blockId = `unpack-dir-${context.messageId}-${Math.random().toString(36).substring(7)}`;
+        const payload = { dirs };
+        const encodedPayload = encodeURIComponent(JSON.stringify(payload));
+
         return `
-        <div class="file-operation-block" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-widget-border); border-left: 4px solid var(--vscode-charts-blue); border-radius: 8px; margin: 12px 0; overflow: hidden;">
-            <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 12px;">
-                <span class="codicon codicon-folder-opened"></span> 
-                <span>Directory Unpack Request</span>
+        <div class="file-operation-block assistant-executable-card unpack-directory-card" id="${blockId}" data-action-type="unpack_directory" data-payload="${encodedPayload}" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-blue); border-radius: 8px; margin: 12px 0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+            <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--vscode-widget-border); flex-wrap: wrap; gap: 6px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span class="codicon codicon-folder-opened" style="color: var(--vscode-charts-blue);"></span> 
+                    <span>Directory Unpack Request (${dirs.length})</span>
+                </div>
+                <div style="display: flex; gap: 6px; align-items: center;">
+                    <button class="code-action-btn secondary-btn copy-scouting-action-btn" data-action-type="unpack_directory" data-payload="${encodedPayload}" style="height: 22px; font-size: 10px; padding: 0 8px;" title="Copy directory listing to clipboard">
+                        <i class="codicon codicon-copy"></i> Copy Listing
+                    </button>
+                    <button class="code-action-btn secondary-btn exec-scouting-local-btn" data-action-type="unpack_directory" data-payload="${encodedPayload}" data-block-id="${blockId}" style="height: 22px; font-size: 10px; padding: 0 8px;">
+                        <i class="codicon codicon-folder-opened"></i> Unpack
+                    </button>
+                    <button class="code-action-btn apply-btn exec-scouting-reprompt-btn" data-action-type="unpack_directory" data-payload="${encodedPayload}" data-block-id="${blockId}" style="height: 22px; font-size: 10px; padding: 0 10px; font-weight: bold;">
+                        <i class="codicon codicon-play"></i> Unpack &amp; Reprompt
+                    </button>
+                </div>
             </div>
-            <div class="expansion-body" style="padding: 12px;">
-                <div style="font-size: 12px; margin-bottom: 8px;">Unroll truncated folder: <strong>${dirs.join(', ')}</strong></div>
+            <div class="expansion-body" style="padding: 10px 12px; font-size: 11.5px;">
+                <div>Unroll directory tree: <strong>${dirs.map(escapeHtmlForOp).join(', ')}</strong></div>
+                <div class="card-output-preview markdown-body" style="display:none; margin-top:8px; max-height:220px; overflow-y:auto; font-size:11px; background:var(--vscode-editor-background); border:1px solid var(--vscode-widget-border); border-radius:4px; padding:8px;"></div>
             </div>
         </div>`;
+    },
+    initialize: (container, context) => {
+        bindGenericScoutingButtons(container, context, '.unpack-directory-card', 'unpack_directory');
     }
 };
+
+function bindGenericScoutingButtons(container: HTMLElement, context: PluginContext, cardSelector: string, actionName: string) {
+    container.querySelectorAll(`${cardSelector} .copy-scouting-action-btn`).forEach(btn => {
+        (btn as HTMLElement).onclick = (e: MouseEvent) => {
+            e.stopPropagation();
+            const btnEl = btn as HTMLButtonElement;
+            const raw = btnEl.dataset.payload;
+            const type = btnEl.dataset.actionType || actionName;
+            if (!raw) return;
+            try {
+                const payload = JSON.parse(decodeURIComponent(raw));
+                const orig = btnEl.innerHTML;
+                btnEl.innerHTML = '<i class="codicon codicon-check"></i> Copied!';
+                context.vscode.postMessage({
+                    command: 'copyAllMessageActions',
+                    actions: [{ type, name: actionName, payload }]
+                });
+                setTimeout(() => { btnEl.innerHTML = orig; }, 1800);
+            } catch {}
+        };
+    });
+
+    container.querySelectorAll(`${cardSelector} .exec-scouting-local-btn, ${cardSelector} .exec-scouting-reprompt-btn`).forEach(btn => {
+        (btn as HTMLElement).onclick = (e: MouseEvent) => {
+            e.stopPropagation();
+            const btnEl = btn as HTMLButtonElement;
+            const raw = btnEl.dataset.payload;
+            const blockId = btnEl.dataset.blockId || btnEl.closest(cardSelector)?.id;
+            const type = btnEl.dataset.actionType || actionName;
+            const isReprompt = btnEl.classList.contains('exec-scouting-reprompt-btn');
+            if (!raw) return;
+            try {
+                const payload = JSON.parse(decodeURIComponent(raw));
+                const card = blockId ? document.getElementById(blockId) : btnEl.closest(cardSelector);
+                card?.querySelectorAll('.exec-scouting-local-btn, .exec-scouting-reprompt-btn').forEach((b: any) => {
+                    b.disabled = true;
+                    b.style.opacity = '0.6';
+                });
+                btnEl.innerHTML = '<div class="spinner"></div> Running...';
+                context.vscode.postMessage({
+                    command: 'executeAllMessageActions',
+                    messageId: context.messageId,
+                    reprompt: isReprompt,
+                    actions: [{
+                        id: `${type}-${blockId}`,
+                        index: 0,
+                        type,
+                        name: actionName,
+                        payload,
+                        blockId
+                    }]
+                });
+            } catch {}
+        };
+    });
+}
 
 export function extractStructurePaths(attrStr: string, inner: string): string[] {
     const paths: string[] = [];
@@ -1893,26 +1997,27 @@ export const peekFilesPlugin: TagPlugin = {
         if (fromMatch) peekOptions.from = fromMatch[1].toLowerCase();
         if (regexMatch) peekOptions.regex = regexMatch[1];
 
-        const blockId = `peek-block-${context.messageId}-${Date.now().toString(36)}`;
-        // Phase-5 unified rendering: agent mode is 100% embedded in assistant mode, so it
-        // renders the IDENTICAL inline fallback card as assistant mode. Only dynamic mode
-        // retains a divergent rendering path. The gate is therefore keyed on dynamicMode only.
+        const blockId = `peek-block-${context.messageId}-${Math.random().toString(36).substring(7)}`;
+        const filesPayload = rawPaths.map(p => ({
+            path: p,
+            ...peekOptions
+        }));
+        const encodedPayload = encodeURIComponent(JSON.stringify(filesPayload));
         const isUnifiedInlineMode = !context.capabilities?.dynamicMode;
 
-        // In Assistant/Agent (embedded) modes, peek_files presents clean fallback options to Add to Context or Unmute
         if (isUnifiedInlineMode) {
             return `
-            <div class="file-operation-block" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-orange); border-radius: 8px; margin: 12px 0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+            <div class="file-operation-block peek-files-block assistant-executable-card" id="${blockId}" data-action-type="peek" data-payload="${encodedPayload}" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-orange); border-radius: 8px; margin: 12px 0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
                 <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--vscode-widget-border);">
                     <div style="display: flex; align-items: center; gap: 8px;">
-                        <span class="codicon codicon-info" style="color: var(--vscode-charts-orange);"></span>
-                        <span>File Reading in Assistant Mode (${rawPaths.length} files)</span>
+                        <span class="codicon codicon-eye" style="color: var(--vscode-charts-orange);"></span>
+                        <span>Peek / File Reading (${rawPaths.length} files)</span>
                     </div>
+                    <button class="code-action-btn secondary-btn copy-peek-output-btn" data-payload="${encodedPayload}" title="Copy peeked slice to clipboard" style="height: 22px; font-size: 10px; padding: 0 8px;">
+                        <i class="codicon codicon-copy"></i> Copy Slice
+                    </button>
                 </div>
                 <div class="expansion-body" style="padding: 10px 12px;">
-                    <div style="font-size: 11px; opacity: 0.85; margin-bottom: 8px;">
-                        The AI requested to inspect file content. In Assistant mode, files must be loaded into context or unmuted:
-                    </div>
                     <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px;">
                         ${rawPaths.map(f => `<button class="code-action-btn secondary-btn peek-file-open-btn" data-path="${f}" style="font-size: 10px; height: 22px;"><i class="codicon codicon-file"></i> ${f.split('/').pop()}</button>`).join('')}
                     </div>
@@ -1923,17 +2028,13 @@ export const peekFilesPlugin: TagPlugin = {
                         <button class="code-action-btn secondary-btn file-op-btn" data-command="bulkUnmuteFiles" data-payload='${JSON.stringify({ paths: rawPaths })}' style="height: 24px; font-size: 11px; padding: 0 10px;">
                             <i class="codicon codicon-eye"></i> Unmute (${rawPaths.length})
                         </button>
+                        <button class="code-action-btn apply-btn execute-peek-reprompt-btn" data-payload="${encodedPayload}" data-message-id="${context.messageId}" style="height: 24px; font-size: 11px; padding: 0 10px; background: var(--vscode-charts-green) !important; color: white !important;">
+                            <i class="codicon codicon-sync"></i> Peek &amp; Reprompt
+                        </button>
                     </div>
                 </div>
             </div>`;
         }
-
-        const filesPayload = rawPaths.map(p => ({
-            path: p,
-            ...peekOptions
-        }));
-
-        const encodedPayload = encodeURIComponent(JSON.stringify(filesPayload));
 
         let criteriaLabel = "";
         if (peekOptions.regex) criteriaLabel = ` &middot; Regex: <code>${peekOptions.regex}</code>`;
@@ -2129,6 +2230,164 @@ export const runTestsPlugin: TagPlugin = {
                 } catch {}
             };
         });
+    }
+};
+
+export const grepPlugin: TagPlugin = {
+    id: 'grep',
+    tagPattern: /<(?:grep|grep_search|search_files)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:grep|grep_search|search_files)>)/gim,
+    render: (match, context) => {
+        const attrStr = match[1] || '';
+        const inner = (match[2] || '').trim();
+        const pMatch = attrStr.match(/(?:pattern|query)=["']([^"']+)["']/i);
+        const pattern = (pMatch ? pMatch[1] : (inner.split(/[\r\n]+/)[0] || '')).replace(/^['"]|['"]$/g, '').trim();
+        if (!pattern) return null;
+
+        const pathSubMatch = attrStr.match(/(?:path|include)=["']([^"']+)["']/i);
+        const subPath = pathSubMatch ? pathSubMatch[1].trim() : undefined;
+
+        const blockId = `grep-${context.messageId}-${Math.random().toString(36).substring(7)}`;
+        const payload = { pattern, path: subPath };
+        const encodedPayload = encodeURIComponent(JSON.stringify(payload));
+
+        return `
+        <div class="file-operation-block assistant-executable-card grep-card" id="${blockId}" data-action-type="grep" data-payload="${encodedPayload}" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-blue); border-radius: 8px; margin: 10px 0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+            <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--vscode-widget-border); flex-wrap: wrap; gap: 6px;">
+                <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+                    <span class="codicon codicon-search" style="color: var(--vscode-charts-blue);"></span>
+                    <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Grep Search: <code>${escapeHtmlForOp(pattern)}</code></span>
+                    ${subPath ? `<span class="file-token-badge weight-light" style="font-size: 9px; padding: 1px 6px;">${escapeHtmlForOp(subPath)}</span>` : ''}
+                </div>
+                <div style="display: flex; gap: 6px; align-items: center;">
+                    <button class="code-action-btn secondary-btn copy-scouting-action-btn" data-action-type="grep" data-payload="${encodedPayload}" style="height: 22px; font-size: 10px; padding: 0 8px;" title="Run grep and copy matches to clipboard">
+                        <i class="codicon codicon-copy"></i> Copy Results
+                    </button>
+                    <button class="code-action-btn secondary-btn exec-scouting-local-btn" data-action-type="grep" data-payload="${encodedPayload}" data-block-id="${blockId}" style="height: 22px; font-size: 10px; padding: 0 8px;">
+                        <i class="codicon codicon-search"></i> Run Grep
+                    </button>
+                    <button class="code-action-btn apply-btn exec-scouting-reprompt-btn" data-action-type="grep" data-payload="${encodedPayload}" data-block-id="${blockId}" style="height: 22px; font-size: 10px; padding: 0 10px; font-weight: bold;">
+                        <i class="codicon codicon-play"></i> Grep &amp; Reprompt
+                    </button>
+                </div>
+            </div>
+            <div class="expansion-body" style="padding: 8px 12px; font-size: 11px;">
+                <div style="opacity: 0.85;">Search workspace for <code>${escapeHtmlForOp(pattern)}</code>${subPath ? ` inside <code>${escapeHtmlForOp(subPath)}</code>` : ''}.</div>
+                <div class="card-output-preview markdown-body" style="display:none; margin-top:8px; max-height:240px; overflow-y:auto; font-size:11px; background:var(--vscode-editor-background); border:1px solid var(--vscode-widget-border); border-radius:4px; padding:8px;"></div>
+            </div>
+        </div>`;
+    },
+    initialize: (container, context) => {
+        bindGenericScoutingButtons(container, context, '.grep-card', 'grep');
+    }
+};
+
+export const manageSymbolsPlugin: TagPlugin = {
+    id: 'manage_symbols',
+    tagPattern: /<manage_symbols\b([^>]*?)(?:\/>|>([\s\S]*?)<\/manage_symbols>)/gim,
+    render: (match, context) => {
+        const attrStr = match[1] || '';
+        const inner = (match[2] || '').trim();
+        const pathMatch = attrStr.match(/(?:path|file|target)=["']([^"']+)["']/i);
+        const filePath = pathMatch ? pathMatch[1].trim() : '';
+        if (!filePath) return null;
+
+        const parseList = (raw?: string): string[] => {
+            if (!raw) return [];
+            return raw.split(/[\r\n,;]+/).map(s => s.trim().replace(/^['"`-]\s*|['"`]$/g, '')).filter(Boolean);
+        };
+        const actAttr = attrStr.match(/activate=["']([^"']+)["']/i);
+        const deactAttr = attrStr.match(/deactivate=["']([^"']+)["']/i);
+        const modeAttr = attrStr.match(/mode=["'](all|none)["']/i);
+
+        const activate = parseList(actAttr?.[1]);
+        const deactivate = parseList(deactAttr?.[1]);
+        if (inner) {
+            const actLine = inner.match(/activate\s*:\s*([^\r\n]+)/i);
+            const deactLine = inner.match(/deactivate\s*:\s*([^\r\n]+)/i);
+            if (actLine) activate.push(...parseList(actLine[1]));
+            if (deactLine) deactivate.push(...parseList(deactLine[1]));
+        }
+
+        const mode = modeAttr ? modeAttr[1].toLowerCase() : undefined;
+        const blockId = `manage-sym-${context.messageId}-${Math.random().toString(36).substring(7)}`;
+        const payload = { path: filePath, activate, deactivate, mode };
+        const encodedPayload = encodeURIComponent(JSON.stringify(payload));
+
+        return `
+        <div class="file-operation-block assistant-executable-card manage-symbols-card" id="${blockId}" data-action-type="manage_symbols" data-payload="${encodedPayload}" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-purple, #9b59b6); border-radius: 8px; margin: 10px 0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+            <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--vscode-widget-border); flex-wrap: wrap; gap: 6px;">
+                <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+                    <span class="codicon codicon-symbol-structure" style="color: var(--vscode-charts-purple, #9b59b6);"></span>
+                    <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Manage Symbols: <code>${escapeHtmlForOp(filePath)}</code></span>
+                </div>
+                <div style="display: flex; gap: 6px; align-items: center;">
+                    <button class="code-action-btn secondary-btn copy-scouting-action-btn" data-action-type="manage_symbols" data-payload="${encodedPayload}" style="height: 22px; font-size: 10px; padding: 0 8px;" title="Copy active symbols code to clipboard">
+                        <i class="codicon codicon-copy"></i> Copy Symbols
+                    </button>
+                    <button class="code-action-btn secondary-btn exec-scouting-local-btn" data-action-type="manage_symbols" data-payload="${encodedPayload}" data-block-id="${blockId}" style="height: 22px; font-size: 10px; padding: 0 8px;">
+                        <i class="codicon codicon-check"></i> Apply Symbols
+                    </button>
+                    <button class="code-action-btn apply-btn exec-scouting-reprompt-btn" data-action-type="manage_symbols" data-payload="${encodedPayload}" data-block-id="${blockId}" style="height: 22px; font-size: 10px; padding: 0 10px; font-weight: bold; background: var(--vscode-charts-purple, #9b59b6) !important; color: white !important;">
+                        <i class="codicon codicon-play"></i> Apply &amp; Reprompt
+                    </button>
+                </div>
+            </div>
+            <div class="expansion-body" style="padding: 8px 12px; font-size: 11px;">
+                <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                    ${mode ? `<span class="file-token-badge weight-medium">mode: ${escapeHtmlForOp(mode)}</span>` : ''}
+                    ${activate.map(s => `<span class="file-token-badge weight-light" style="color:var(--vscode-charts-green); border-color:var(--vscode-charts-green);">+ ${escapeHtmlForOp(s)}</span>`).join('')}
+                    ${deactivate.map(s => `<span class="file-token-badge weight-muted" style="color:var(--vscode-charts-orange); border-color:var(--vscode-charts-orange);">- ${escapeHtmlForOp(s)}</span>`).join('')}
+                </div>
+                <div class="card-output-preview markdown-body" style="display:none; margin-top:8px; max-height:200px; overflow-y:auto; font-size:11px; background:var(--vscode-editor-background); border:1px solid var(--vscode-widget-border); border-radius:4px; padding:8px;"></div>
+            </div>
+        </div>`;
+    },
+    initialize: (container, context) => {
+        bindGenericScoutingButtons(container, context, '.manage-symbols-card', 'manage_symbols');
+    }
+};
+
+export const readFullFilePlugin: TagPlugin = {
+    id: 'read_full_file',
+    tagPattern: /<(?:read_full_file|read_file)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:read_full_file|read_file)>)/gim,
+    render: (match, context) => {
+        const attrStr = match[1] || '';
+        const inner = (match[2] || '').trim();
+        const pMatch = attrStr.match(/(?:path|file)=["']([^"']+)["']/i);
+        const reqPath = (pMatch ? pMatch[1] : (inner.split(/[\r\n\s]+/)[0] || '')).replace(/^['"]|['"]$/g, '').trim();
+        if (!reqPath) return null;
+
+        const blockId = `read-full-${context.messageId}-${Math.random().toString(36).substring(7)}`;
+        const payload = { path: reqPath };
+        const encodedPayload = encodeURIComponent(JSON.stringify(payload));
+
+        return `
+        <div class="file-operation-block assistant-executable-card read-full-file-card" id="${blockId}" data-action-type="read_full_file" data-payload="${encodedPayload}" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-green); border-radius: 8px; margin: 10px 0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+            <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--vscode-widget-border); flex-wrap: wrap; gap: 6px;">
+                <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+                    <span class="codicon codicon-file-code" style="color: var(--vscode-charts-green);"></span>
+                    <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Read Full File: <code>${escapeHtmlForOp(reqPath)}</code></span>
+                </div>
+                <div style="display: flex; gap: 6px; align-items: center;">
+                    <button class="code-action-btn secondary-btn copy-scouting-action-btn" data-action-type="read_full_file" data-payload="${encodedPayload}" style="height: 22px; font-size: 10px; padding: 0 8px;" title="Copy file content to clipboard">
+                        <i class="codicon codicon-copy"></i> Copy File
+                    </button>
+                    <button class="code-action-btn secondary-btn exec-scouting-local-btn" data-action-type="read_full_file" data-payload="${encodedPayload}" data-block-id="${blockId}" style="height: 22px; font-size: 10px; padding: 0 8px;">
+                        <i class="codicon codicon-eye"></i> Preview
+                    </button>
+                    <button class="code-action-btn apply-btn exec-scouting-reprompt-btn" data-action-type="read_full_file" data-payload="${encodedPayload}" data-block-id="${blockId}" style="height: 22px; font-size: 10px; padding: 0 10px; font-weight: bold;">
+                        <i class="codicon codicon-play"></i> Read &amp; Reprompt
+                    </button>
+                </div>
+            </div>
+            <div class="expansion-body" style="padding: 8px 12px; font-size: 11px;">
+                <div style="opacity: 0.85;">Read complete content of <code>${escapeHtmlForOp(reqPath)}</code>.</div>
+                <div class="card-output-preview markdown-body" style="display:none; margin-top:8px; max-height:240px; overflow-y:auto; font-size:11px; background:var(--vscode-editor-background); border:1px solid var(--vscode-widget-border); border-radius:4px; padding:8px;"></div>
+            </div>
+        </div>`;
+    },
+    initialize: (container, context) => {
+        bindGenericScoutingButtons(container, context, '.read-full-file-card', 'read_full_file');
     }
 };
 

@@ -26,6 +26,15 @@ export class OrchestratorPromptBuilder {
             sessionState = {}
         } = options;
 
+        const scratchScriptProtocol = `
+### 🧪 SCRATCH SCRIPT SANDBOX DISCIPLINE
+Whenever a Worker writes-and-executes a script ONLY to test the system, verify an assumption, probe behavior, or debug a hypothesis (a throwaway/scratch script that is NOT part of the user's deliverable):
+- **Write it inside \`.lollms/scripts\` at the workspace root** (create the folder if missing), e.g. \`.lollms/scripts/probe_<name>.py\`. NEVER place scratch scripts inside the user's source tree or workspace root — no pollution.
+- Use a unique, descriptive filename to avoid collisions.
+- **ALWAYS clean up after finishing**: delete the scratch script (and any temporary artifacts it created) once the test/verification is complete so nothing is left behind.
+- This sandbox rule does NOT apply to genuine deliverable files the user explicitly asked you to create.
+`;
+
         const errorManagementProtocol = `
 ### 🛡️ ERROR & LOOP PREVENTION PROTOCOL
 1. **THE FAILURE RULE**: If your last action was a FAILURE, your next 'thought' MUST start with: "RCA: [Reason why it failed]".
@@ -103,6 +112,8 @@ ${toolDescriptions}
 ${latentCatalogue}
 
 ${errorManagementProtocol}
+
+${scratchScriptProtocol}
 
 ### 💡 SKILLS & CONTEXT
 ${skillsDesc}

@@ -1275,7 +1275,8 @@ ${stepsHtml ? `<div style="display:flex; flex-direction:column; gap:4px; margin-
         }
 
         const isSparqlActive = options.sparqlEnabled !== false && (options.currentDiscussion?.capabilities as any)?.sparqlEnabled !== false;
-        const systemPrompt = LibrarianPromptBuilder.getMasterLibrarianSystemPrompt(
+        const isGrepActive = (options.currentDiscussion?.capabilities as any)?.grepEnabled !== false;
+        const systemPromptBase = LibrarianPromptBuilder.getMasterLibrarianSystemPrompt(
             maxTokens,
             objectiveThreshold,
             objectiveThresholdPercent,
@@ -1283,6 +1284,20 @@ ${stepsHtml ? `<div style="display:flex; flex-direction:column; gap:4px; margin-
             isSparqlActive,
             options.ignoreContextSize === true
         );
+
+        // 🚫 DYNAMIC DISABLED-TOOL PROHIBITION: Prevents the LLM from wasting rounds on
+        // tools the user explicitly deactivated in the HUD (they don't appear in the
+        // active tool list, but we must also forbid them in the prompt to avoid retries).
+        const disabledToolNotices: string[] = [];
+        if (!isGrepActive) {
+            disabledToolNotices.push('- `<grep>` — the GREP engine is DEACTIVATED by the user in the HUD. Emitting `<grep>` will fail and waste a round. Use `<peek_files>`, `<read_full_file>`, `<show_symbol>`, or `<read_definitions>` instead.');
+        }
+        if (!isSparqlActive) {
+            disabledToolNotices.push('- `<sparql>` — the code architecture graph is DEACTIVATED. Do NOT emit `<sparql>`. Use static analysis tools instead.');
+        }
+        const systemPrompt = disabledToolNotices.length > 0
+            ? `${systemPromptBase}\n\n### 🚫 UNAVAILABLE TOOLS — STRICTLY FORBIDDEN (DISABLED BY USER IN HUD):\n${disabledToolNotices.join('\n')}\n`
+            : systemPromptBase;
 
         const safeUserPromptText = (options.userPromptText || '')
             .replace(/data:image\/[a-zA-Z+]+;base64,[A-Za-z0-9+/=]{50,}/g, '[Attached Image]')
@@ -1777,11 +1792,30 @@ Analyze the requirements. Use your discovery tools (<read_definitions>, <show_sy
 
             const grepMatch = cleanResponse.match(/<grep\b([^>]*?)(?:\/>|>([\s\S]*?)<\/grep>)/i);
             if (grepMatch) {
+                if (!isGrepActive) {
+                    conversation.push({ role: 'assistant', content: cleanResponse });
+                    conversation.push({
+                        role: 'user',
+                        content: `🚫 **GREP IS DEACTIVATED** by the user in the HUD. \`<grep>\` is strictly forbidden in this session. Use one of the available inspection tools instead: \`<peek_files path="..." lines="N"/>\`, \`<read_full_file path="..."/>\`, \`<show_symbol target="..."/>\`, or \`<read_definitions path="..."/>\`. Do NOT emit another \`<grep>\` tag.`
+                    });
+                    continue;
+                }
                 const attrStr = grepMatch[1] || "";
                 const pMatch = attrStr.match(/(?:pattern|query)=["']([^"']+)["']/i);
                 const pattern = (pMatch ? pMatch[1] : (grepMatch[2]?.trim() || "")).trim();
                 const pathMatch = attrStr.match(/(?:path|include)=["']([^"']+)["']/i);
                 const subPath = pathMatch ? pathMatch[1].trim() : undefined;
+                const extAttrMatch = attrStr.match(/(?:extensions?|ext|filetypes?)["']?\s*=\s*["']([^"']+)["']/i);
+                const fileExtensions = extAttrMatch ? extAttrMatch[1].trim() : undefined;
+                const ctxAttrMatch = attrStr.match(/(?:context|contextlines?|c)["']?\s*=\s*["']?(\d+)["']?/i);
+                const contextLines = ctxAttrMatch ? parseInt(ctxAttrMatch[1], 10) : undefined;
+                const maxPerFileMatch = attrStr.match(/max(?:perfile|hits)?["']?\s*=\s*["']?(\d+)["']?/i);
+                const maxPerFile = maxPerFileMatch ? parseInt(maxPerFileMatch[1], 10) : undefined;
+                const invertMatch = /\binvert(?:match)?["']?\s*=\s*["']?true["']?/i.test(attrStr);
+                const wholeLine = /\bwholeline["']?\s*=\s*["']?true["']?/i.test(attrStr);
+                const wholeWord = /\bwholeword["']?\s*=\s*["']?true["']?/i.test(attrStr);
+                const matchCase = /\b(?:matchcase|case-?sensitive)["']?\s*=\s*["']?true["']?/i.test(attrStr);
+                const multiline = /\bmultiline["']?\s*=\s*["']?true["']?/i.test(attrStr);
 
                 if (pattern) {
                     const toolSig = `grep:${pattern.toLowerCase()}:${subPath || ''}`;
@@ -1795,7 +1829,18 @@ Analyze the requirements. Use your discovery tools (<read_definitions>, <show_sy
                     }
                     executedToolSignatures.add(toolSig);
 
-                    const searchRes = await contextManager.searchWorkspaceContent(pattern, { matchCase: false, wholeWord: false, include: subPath, bypassGate: true }, signal);
+                    const searchRes = await contextManager.searchWorkspaceContent(pattern, {
+                        matchCase,
+                        wholeWord,
+                        include: subPath,
+                        fileExtensions,
+                        contextLines,
+                        maxPerFile,
+                        invertMatch,
+                        wholeLine,
+                        multiline,
+                        bypassGate: true
+                    }, signal);
                     const snippet = searchRes.slice(0, 8).map(r => `${r.path}:${r.line} - ${r.snippet}`).join('\n') || 'No matches found.';
                     const step = { type: 'grep', label: `Grep: "${pattern}"`, detail: `${searchRes.length} hits` };
                     discoverySteps.push(step);

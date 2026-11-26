@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -40,6 +41,7 @@
             position: relative;
         }
 
+        /* Flexible header: never clip when the actions row wraps */
         .companion-header {
             display: flex;
             justify-content: space-between;
@@ -48,8 +50,10 @@
             background-color: var(--vscode-sideBarSectionHeader-background);
             border-bottom: 1px solid var(--vscode-widget-border);
             flex-shrink: 0;
-            height: 36px;
+            min-height: 36px;
             box-sizing: border-box;
+            flex-wrap: nowrap;
+            gap: 6px;
         }
 
         .companion-header-left {
@@ -57,6 +61,7 @@
             align-items: center;
             gap: 8px;
             min-width: 0;
+            flex: 0 1 auto;
         }
 
         .companion-title {
@@ -78,17 +83,70 @@
             align-items: center;
             gap: 4px;
             font-weight: 600;
+            white-space: nowrap;
         }
 
+        /* Actions must be allowed to grow/wrap without being cropped */
         .companion-actions {
             display: flex;
-            gap: 4px;
+            gap: 3px;
             align-items: center;
+            flex-wrap: nowrap;
+            justify-content: flex-end;
+            min-width: 0;
+            flex-shrink: 1;
+        }
+
+        .companion-actions > * {
+            flex-shrink: 0;
+        }
+
+        /* Wider, clearly visible model dropdown */
+        .companion-model-select {
+            min-width: 110px;
+            max-width: 200px;
+            flex: 1 1 auto;
+            height: 24px;
+            line-height: 22px;
+            font-size: 11px;
+            font-weight: 600;
+            background: var(--vscode-dropdown-background, var(--vscode-input-background));
+            color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
+            border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border));
+            border-radius: 4px;
+            padding: 0 4px;
+            cursor: pointer;
+            outline: none;
+        }
+
+        .companion-model-select:focus {
+            border-color: var(--vscode-focusBorder);
+        }
+
+        .companion-thinking .thinking-dots span {
+            opacity: 0;
+            animation-delay: 0.2s;
+        }
+        .companion-thinking .thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes Blink {
+            0%, 100% { opacity: 0; }
+            20% { opacity: 1; }
+        }
+        .streaming-cursor {
+            display: inline-block;
+            margin-left: 2px;
+            color: var(--vscode-textLink-foreground);
+            animation: cursorBlink 1s step-start infinite;
+        }
+        @keyframes cursorBlink {
+            50% { opacity: 0; }
         }
 
         .companion-header .icon-btn {
-            width: 26px;
-            height: 26px;
+            width: 24px;
+            height: 24px;
+            min-width: 24px;
+            flex: 0 0 24px;
             padding: 0;
             border-radius: 4px;
             background: transparent;
@@ -98,6 +156,12 @@
             display: inline-flex;
             align-items: center;
             justify-content: center;
+            line-height: 1;
+        }
+
+        .companion-header .icon-btn .codicon {
+            font-size: 14px;
+            line-height: 1;
         }
 
         .companion-header .icon-btn:hover {
@@ -240,6 +304,26 @@
             border-bottom: 1px solid var(--vscode-widget-border);
             padding: 3px 6px;
             background-color: var(--vscode-editorWidget-background);
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 3px;
+            overflow: visible;
+            max-height: none;
+            min-height: 28px;
+        }
+
+        /* Local override so the toolbar chips never get cropped by external CSS */
+        .companion-input-wrapper .rich-input-toolbar .toolbar-tool {
+            height: 22px;
+            min-height: 22px;
+            padding: 2px 6px;
+            font-size: 10.5px;
+            line-height: 1;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            box-sizing: border-box;
         }
 
         .companion-input-wrapper .input-area {
@@ -459,6 +543,12 @@
                 </span>
             </div>
             <div class="companion-actions">
+                <select id="companion-model-select" class="companion-model-select" title="Active Model">
+                    <option value="">Loading models…</option>
+                </select>
+                <button type="button" id="refresh-models-btn" class="icon-btn" title="Refresh models list">
+                    <span class="codicon codicon-refresh"></span>
+                </button>
                 <button type="button" id="attach-btn" class="icon-btn" title="Follow active file (Click to pin)">
                     <span class="codicon codicon-pin"></span>
                 </button>
@@ -499,10 +589,6 @@
                     <div class="input-row">
                         <textarea id="prompt-input" placeholder="Ask about this file/selection, paste images (Ctrl+V), or request edits..."></textarea>
                         <div class="control-buttons">
-                            <input type="file" id="companion-image-input" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" multiple style="display: none;">
-                            <button type="button" id="attach-image-btn" title="Attach Image (or Paste Ctrl+V / Drag & Drop)">
-                                <span class="codicon codicon-file-media"></span>
-                            </button>
                             <button type="button" id="send-btn" title="Send Message (Enter)">
                                 <span class="codicon codicon-send"></span>
                             </button>

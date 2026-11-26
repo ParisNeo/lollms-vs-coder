@@ -3,21 +3,30 @@ import DOMPurify from 'dompurify';
 
 export const sparqlPlugin: TagPlugin = {
     id: 'query_architecture',
-    tagPattern: /<(?:query_architecture|sparql)\b[^>]*>([\s\S]*?)<\/(?:query_architecture|sparql)>/gi,
+    tagPattern: /<(?:query_architecture|sparql)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:query_architecture|sparql)>)/gi,
     render: (match, context) => {
-        const queryText = match[1].trim();
-        const blockId = `sparql-req-${context.messageId}-${Math.random().toString(36).substring(7)}`;
+        const attrStr = match[1] || '';
+        const attrQueryMatch = attrStr.match(/\bquery=["']([\s\S]*?)["']/i);
+        const queryText = ((attrQueryMatch ? attrQueryMatch[1] : '') || match[2] || '').trim();
+        if (!queryText) return null;
 
-        const isAuto = context.capabilities?.autoApply === true;
+        const blockId = `sparql-req-${context.messageId}-${Math.random().toString(36).substring(7)}`;
+        const encodedPayload = encodeURIComponent(JSON.stringify({ query: queryText }));
+        const isAuto = context.capabilities?.autoExecuteScouting === true;
         const escapedQuery = queryText.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
         return `
-        <div class="generation-block sparql-block" id="${blockId}" data-query="${encodeURIComponent(queryText)}">
+        <div class="generation-block sparql-block assistant-executable-card" id="${blockId}" data-action-type="sparql" data-query="${encodeURIComponent(queryText)}" data-payload="${encodedPayload}">
             <div class="generation-header" style="background: rgba(155, 89, 182, 0.1); border-bottom: 1px solid var(--vscode-widget-border);">
                 <span class="summary-lang-label" style="color: var(--vscode-charts-purple); font-weight: 800;">
                     <i class="codicon codicon-graph"></i> SPARQL-lite Query Request
                 </span>
                 <div class="code-actions" style="display:flex; gap:6px;">
+                    <button class="code-action-btn secondary-btn copy-sparql-btn"
+                            data-query="${encodeURIComponent(queryText)}"
+                            title="Copy SPARQL query to clipboard">
+                        <i class="codicon codicon-copy"></i> Copy
+                    </button>
                     <button class="code-action-btn secondary-btn run-local-sparql-btn" 
                             id="btn-local-${blockId}"
                             data-query="${encodeURIComponent(queryText)}"
@@ -37,54 +46,64 @@ export const sparqlPlugin: TagPlugin = {
             </div>
             <div class="generation-body" style="padding: 12px; background: var(--vscode-editor-background); display:flex; flex-direction:column; gap:8px;">
                 <pre style="margin: 0; padding: 10px; background: rgba(0,0,0,0.15); border: 1px solid var(--vscode-widget-border); border-radius: 4px; font-family: monospace; font-size: 11px; white-space: pre-wrap; overflow-x: auto;">${escapedQuery}</pre>
-                ${isAuto ? `<div style="font-size: 10px; color: var(--vscode-charts-green);"><i class="codicon codicon-sync spin"></i> Auto-Apply Active: Querying complete ontology graph...</div>` : ''}
-                <div class="sparql-results-render-area markdown-body" style="display:none; max-height:300px; overflow-y:auto; border-top: 1px solid var(--vscode-widget-border); padding-top:8px; font-size:11px;"></div>
+                ${isAuto ? `<div style="font-size: 10px; color: var(--vscode-charts-green);"><i class="codicon codicon-sync spin"></i> Auto-Scouting Active: Querying complete ontology graph...</div>` : ''}
+                <div class="sparql-results-render-area card-output-preview markdown-body" style="display:none; max-height:300px; overflow-y:auto; border-top: 1px solid var(--vscode-widget-border); padding-top:8px; font-size:11px;"></div>
             </div>
         </div>`;
     },
     initialize: (container, context) => {
-        const block = container.querySelector('.sparql-block') as HTMLElement;
-        if (!block) return;
+        container.querySelectorAll('.sparql-block').forEach((blockEl: any) => {
+            const block = blockEl as HTMLElement;
+            const query = decodeURIComponent(block.dataset.query || '');
 
-        const query = decodeURIComponent(block.dataset.query || '');
+            const copyBtn = block.querySelector('.copy-sparql-btn') as HTMLButtonElement | null;
+            if (copyBtn) {
+                copyBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    context.vscode.postMessage({ command: 'copyToClipboard', text: query });
+                    const orig = copyBtn.innerHTML;
+                    copyBtn.innerHTML = '<i class="codicon codicon-check"></i> Copied!';
+                    setTimeout(() => { copyBtn.innerHTML = orig; }, 1800);
+                };
+            }
 
-        const runQuery = (button: HTMLButtonElement, autoReprompt: boolean) => {
-            // Lock both buttons
-            block.querySelectorAll('.run-local-sparql-btn, .run-reprompt-sparql-btn').forEach((btn: any) => {
-                btn.disabled = true;
-                btn.style.opacity = '0.5';
-            });
+            const runQuery = (button: HTMLButtonElement, autoReprompt: boolean) => {
+                block.querySelectorAll('.run-local-sparql-btn, .run-reprompt-sparql-btn').forEach((btn: any) => {
+                    btn.disabled = true;
+                    btn.style.opacity = '0.5';
+                });
 
-            button.innerHTML = '<div class="spinner"></div> Running...';
+                button.innerHTML = '<div class="spinner"></div> Running...';
 
-            context.vscode.postMessage({
-                command: 'executeLollmsCommand',
-                details: {
-                    command: 'lollms-vs-coder.runSparqlQueryDirectly',
-                    params: { 
-                        query: query,
-                        messageId: context.messageId,
-                        blockId: block.id,
-                        reprompt: autoReprompt
+                context.vscode.postMessage({
+                    command: 'executeLollmsCommand',
+                    details: {
+                        command: 'lollms-vs-coder.runSparqlQueryDirectly',
+                        params: { 
+                            query: query,
+                            messageId: context.messageId,
+                            blockId: block.id,
+                            reprompt: autoReprompt
+                        }
                     }
-                }
-            });
-        };
-
-        const localBtn = block.querySelector('.run-local-sparql-btn') as HTMLButtonElement;
-        if (localBtn) {
-            localBtn.onclick = (e) => {
-                e.stopPropagation();
-                runQuery(localBtn, false);
+                });
             };
-        }
 
-        const repromptBtn = block.querySelector('.run-reprompt-sparql-btn') as HTMLButtonElement;
-        if (repromptBtn) {
-            repromptBtn.onclick = (e) => {
-                e.stopPropagation();
-                runQuery(repromptBtn, true);
-            };
-        }
+            const localBtn = block.querySelector('.run-local-sparql-btn') as HTMLButtonElement | null;
+            if (localBtn) {
+                localBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    runQuery(localBtn, false);
+                };
+            }
+
+            const repromptBtn = block.querySelector('.run-reprompt-sparql-btn') as HTMLButtonElement | null;
+            if (repromptBtn) {
+                repromptBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    runQuery(repromptBtn, true);
+                };
+            }
+        });
     }
 };

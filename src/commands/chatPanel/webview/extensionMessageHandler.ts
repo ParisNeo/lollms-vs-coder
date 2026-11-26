@@ -1368,8 +1368,31 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (overlay) overlay.classList.remove('visible');
                 }
                 break;
+            case 'renderLlmHistoryView':
+                {
+                    state.isLlmHistoryView = true;
+                    if (dom.chatMessagesContainer) {
+                        Array.from(dom.chatMessagesContainer.children).forEach(child => {
+                            if (child.id !== 'message-insertion-controls') {
+                                child.remove();
+                            }
+                        });
+                    }
+                    if (Array.isArray(message.messages)) {
+                        message.messages.forEach((msg: any) => {
+                            try {
+                                addMessage(msg, true, { skipScroll: true });
+                            } catch (e) {
+                                console.error("Error adding LLM history message:", e);
+                            }
+                        });
+                    }
+                    updateBadges();
+                }
+                break;
             case 'loadDiscussion':
                 {
+                    state.isLlmHistoryView = false;
                     if (message.workspaceFolders) {
                         (window as any).workspaceFolders = message.workspaceFolders;
                         (state as any).workspaceFolders = message.workspaceFolders;

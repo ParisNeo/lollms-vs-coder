@@ -80,17 +80,23 @@ export class CoderPromptBuilder {
             ? 'Do NOT request to load all project files at once.'
             : 'NEVER try to load all project files into context at once — if you overload the context window, the Context Manager will cut/mute files and cause a loop.';
 
+        const phaseFollowUp = isExport
+            ? `3. **REQUEST ONLY NEEDED FILES PER PHASE**: When you need missing files for the next step, request only the specific 1–3 files required via \`<add_files_to_context>\`, or inspect targeted symbols/structure via \`<show_symbol>\` / \`<load_structure>\`.`
+            : `3. **RELEASE FINISHED FILES FIRST**: When moving from one subset of files to the next, explicitly mute files you are done with using \`<mute_files>\\npath/to/finished.ext\\n</mute_files>
+
+\` (or \`<remove_files_from_context>\`) BEFORE requesting new files.
+4. **NEVER RE-REQUEST CUT FILES IN A LOOP**: If the Context Compression notice indicates that files were compacted to \`[D]\` or muted \`[M]\` due to token limits, do NOT immediately re-unmute them all again. Instead:
+   - Inspect only the structure or exact symbols needed via \`<load_structure path="path/to/file.ext" />\`, \`<show_symbol target="path/to/file.ext:SymbolName" />\`, or \`<manage_symbols path="path/to/file.ext" activate="SymbolA" />\`, OR
+   - Mute other unneeded files first via \`<mute_files>\`, OR
+   - Deliver the changes for the currently loaded subset now and outline the next phase.`;
+
         return `
 ### 🔄 PHASED CONTEXT LOADING & ANTI-LOOP DISCIPLINE
 1. **WORK IN PHASES ON SMALL SUBSETS**: ${phaseIntro} Split multi-file work into **phases** by loading ONLY the small subset (1–3 files) needed for the current phase.
 2. **MULTI-PHASE \`<plan>\` SPLIT WHEN CONTEXT IS LARGE**: If loading all required files would exceed the model's context size (or if notified that context exploded), output ONLY a \`<plan>\` block using the standard format:
    \`<plan><findings>...</findings><phase id="1"><instruction>...</instruction><files_list>path/to/file1.ext</files_list></phase><phase id="2">...</phase></plan>\`
    so each phase can be executed sequentially with only its own files loaded.
-3. **RELEASE FINISHED FILES FIRST**: When moving from one subset of files to the next, explicitly mute files you are done with using \`<mute_files>\\npath/to/finished.ext\\n</mute_files>\` (or \`<remove_files_from_context>\`) BEFORE requesting new files.
-4. **NEVER RE-REQUEST CUT FILES IN A LOOP**: If the Context Compression notice indicates that files were compacted to \`[D]\` or muted \`[M]\` due to token limits, do NOT immediately re-unmute them all again. Instead:
-   - Inspect only the structure or exact symbols needed via \`<load_structure path="path/to/file.ext" />\`, \`<show_symbol target="path/to/file.ext:SymbolName" />\`, or \`<manage_symbols path="path/to/file.ext" activate="SymbolA" />\`, OR
-   - Mute other unneeded files first via \`<mute_files>\`, OR
-   - Deliver the changes for the currently loaded subset now and outline the next phase.
+${phaseFollowUp}
 
 ### 🔬 HYPOTHESIS-DRIVEN INSTRUMENTATION & \`<user_instruction>\` PROTOCOL
 If you fail to solve a bug or problem in one go (e.g., an attempted fix did not resolve the issue, tests/runtime still fail, or the root cause cannot be proven statically):
@@ -262,7 +268,6 @@ You are an expert AI software engineer operating on an exported project snapshot
 2. **REQUESTING MISSING CONTEXT (GRANULAR OPTIONS)**:
    - To inspect a specific function or class implementation: \`<show_symbol target="path/to/file.ext:SymbolName" />\`
    - To load a file's structure / signatures only: \`<load_structure path="path/to/file.ext" />\`
-   - To unmute full file [M]: \`<unmute_files>\npath/to/file.ext\n</unmute_files>\`
    - To request a hidden file: \`<add_files_to_context>\npath/to/file.ext\n</add_files_to_context>\`
 3. **CONCLUDING SUMMARY**:
    - At the end of coding after emitting all code blocks, conclude with:

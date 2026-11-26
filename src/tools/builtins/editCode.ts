@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
 import { applySearchReplace, getProcessedSystemPrompt, stripThinkingTags, normalizeAiderContent, parseAiderHunks } from '../../utils';
 import { AgentSecurityGuard } from '../../security/agentSecurityGuard';
+import { CodeLossReviewPanel } from '../../panels/codeLossReviewPanel';
 import { ChatMessage } from '../../lollmsAPI';
 import * as path from 'path';
 import { Logger } from '../../logger';
@@ -226,19 +227,34 @@ If you need to modify this file, write and execute a script (e.g., Python with o
                 const secLevel = env.agentManager?.getSecurityLevel?.() || 'guarded';
                 const writeValidation = AgentSecurityGuard.validateWriteContent(filePath, originalContent, workingContent, secLevel, false);
                 if (!writeValidation.valid) {
-                    if (writeValidation.requiresConfirmation && env.agentManager?.requestSecurityApproval) {
-                        const approval = await env.agentManager.requestSecurityApproval(
-                            `Confirm Large Shrink Edit: ${filePath}`,
-                            writeValidation.reason || 'Significant code reduction detected.',
-                            'edit_code',
+                    if (writeValidation.requiresConfirmation) {
+                        const reviewDecision = await CodeLossReviewPanel.confirm({
                             filePath,
+                            title: `Confirm Large Shrink Edit: ${path.basename(filePath)}`,
+                            reason: writeValidation.reason || 'Significant code reduction detected.',
+                            originalContent,
+                            proposedContent: workingContent,
+                            allowAskAi: false,
                             signal
-                        );
-                        if (approval === 'block') {
-                            attempts++;
-                            lastFailureReason = writeValidation.reason || 'Edit blocked due to excessive code shrink.';
-                            continue;
+                        });
+                        if (reviewDecision !== 'accept') {
+                            env.agentManager?.securityGuard?.recordAudit?.({
+                                verdict: 'blocked',
+                                tool: 'edit_code',
+                                target: filePath,
+                                reason: writeValidation.reason || 'User rejected large shrink edit after reviewing diff.'
+                            });
+                            return {
+                                success: false,
+                                output: `🛑 USER REJECTED DIFF: ${writeValidation.reason || 'User rejected the proposed edit after reviewing the diff.'}`
+                            };
                         }
+                        env.agentManager?.securityGuard?.recordAudit?.({
+                            verdict: 'confirmed',
+                            tool: 'edit_code',
+                            target: filePath,
+                            reason: `${writeValidation.reason || 'Large shrink'} (accepted after diff review)`
+                        });
                     } else {
                         attempts++;
                         lastFailureReason = writeValidation.reason || 'Content integrity check failed.';

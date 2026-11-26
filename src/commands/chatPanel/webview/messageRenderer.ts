@@ -4961,6 +4961,10 @@ export class ContextPresenter {
                             <i class="codicon codicon-references" style="color: var(--vscode-charts-blue);"></i>
                             <span>Cross-Project Prompt</span>
                         </button>
+                        <button id="hud-toggle-llm-history-btn" class="code-action-btn ${state.isLlmHistoryView ? 'apply-btn' : 'secondary-btn'} hud-tool-btn" title="Toggle between Discussion History and the actual sanitized/compressed messages seen by the AI">
+                            <i class="codicon codicon-eye" style="color: ${state.isLlmHistoryView ? 'white' : 'var(--vscode-charts-green)'};"></i>
+                            <span>${state.isLlmHistoryView ? 'AI View (Active)' : 'AI View'}</span>
+                        </button>
                     </div>
 
                     <div class="hud-search-container" id="hud-search-bar">
@@ -5935,6 +5939,19 @@ export class ContextBinder {
                 e.preventDefault();
                 e.stopPropagation();
                 import('./ui.js').then(ui => ui.openInterProjectPromptModal());
+            };
+        }
+
+        const toggleLlmHistoryBtn = dashboard.querySelector('#hud-toggle-llm-history-btn') as HTMLElement;
+        if (toggleLlmHistoryBtn) {
+            toggleLlmHistoryBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                state.isLlmHistoryView = !state.isLlmHistoryView;
+                vscode.postMessage({
+                    command: 'toggleLlmHistoryView',
+                    showLlmHistory: state.isLlmHistoryView
+                });
             };
         }
 

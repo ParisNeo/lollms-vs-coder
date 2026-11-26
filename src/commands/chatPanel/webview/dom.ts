@@ -146,6 +146,7 @@ export const state: {
     streamingMessages: { [key: string]: { buffer: string, timer: any } },
     isGenerating: boolean,
     isHudExpanded: boolean,
+    isLlmHistoryView?: boolean,
     appliedState: Record<string, Record<number, number[]>>, // Persistent applied hunks
     failedPatches: Record<string, Record<string, { error: string; filePath: string }>>, // Failed hunks/files per messageId
     excludedPatches: Record<string, Set<string>>, // Excluded hunks/files from Apply All per messageId
@@ -181,6 +182,7 @@ export const state: {
     }
 } = {
     isHudExpanded: false,
+    isLlmHistoryView: false,
     searchMatches: [],
     currentMatchIndex: -1,
     isInspectorEnabled: false,

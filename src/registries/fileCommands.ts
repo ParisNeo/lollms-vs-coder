@@ -8,6 +8,7 @@ import { ChatPanel } from '../commands/chatPanel/chatPanel';
 import { CompanionPanel } from '../commands/companionPanel';
 
 import { FileRepairStudioPanel } from '../panels/fileRepairStudioPanel';
+import { CodeLossReviewPanel } from '../panels/codeLossReviewPanel';
 
 export function registerFileCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
 
@@ -441,7 +442,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
         return text.substring(0, startOffset) + adjustedContent + text.substring(endOffset);
     }
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string, options?: { silent?: boolean, autoSave?: boolean, messageId?: string, blockIndex?: number, hunkIndex?: number, blockId?: string }) => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string, options?: { silent?: boolean, autoSave?: boolean, messageId?: string, blockIndex?: number, hunkIndex?: number, blockId?: string, skipCodeLossCheck?: boolean }) => {
         // Clean up hallucinated metadata like "(2 hunks)" from the file path
         const rawInputPath = (filePath || '').replace(/\s*\(\d+\s*hunks?\)/i, '').trim();
 
@@ -610,29 +611,31 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             // For targeted symbol replacements, evaluate final merged document size rather than snippet length
             const evaluatedContent = targetMember.length > 0 ? finalWriteContent : content;
 
-            if (fileExists && options?.autoSave && targetMember.length === 0) {
+            if (fileExists && !options?.skipCodeLossCheck && options?.autoSave && targetMember.length === 0) {
                 const sizeRatio = evaluatedContent.length / (originalContent.length || 1);
                 const isSubstantialShrink = sizeRatio < 0.4 && originalContent.length > 500;
 
                 if (isSubstantialShrink) {
-                    const warningMsg = `An automated "Apply All" or "Auto Apply" operation is attempting to apply modifications that reduce this file to ${Math.round(sizeRatio * 100)}% of its original size (losing ${originalContent.length - evaluatedContent.length} characters). This might destroy critical code!`;
+                    const warningMsg = `An automated "Apply All" or "Auto Apply" operation is attempting to apply modifications that reduce this file to ${Math.round(sizeRatio * 100)}% of its original size (losing ${originalContent.length - evaluatedContent.length} characters). Verify the diff below before accepting.`;
 
-                    const choices = ["Apply Changes Anyway", "Halt & Protect File"];
-                    const result = await vscode.window.showWarningMessage(
-                        `⚠️ SOVEREIGN PROTECTION SHIELD: Code Loss Prevented in ${relativePath}`,
-                        { modal: true },
-                        ...choices
-                    );
+                    const reviewDecision = await CodeLossReviewPanel.confirm({
+                        filePath: relativePath,
+                        title: `Sovereign Shield: Code Loss Detected in ${path.basename(relativePath)}`,
+                        reason: warningMsg,
+                        originalContent,
+                        proposedContent: finalWriteContent,
+                        allowAskAi: false
+                    });
 
-                    if (result !== "Apply Changes Anyway") {
-                        Logger.warn(`Sovereign Shield: Interrupted automated file write for ${relativePath} to prevent potential code destruction.`);
-                        return { success: false, error: "Blocked by Sovereign Shield: Substantial code shrink detected." };
+                    if (reviewDecision !== 'accept') {
+                        Logger.warn(`Sovereign Shield: Interrupted automated file write for ${relativePath} after diff review.`);
+                        return { success: false, error: "Blocked by Sovereign Shield: User rejected substantial code shrink after diff review." };
                     }
                 }
             }
 
             // --- PLACEHOLDER & SIZE SAFETY CHECK (MANUAL APPLY) ---
-            if (fileExists && !options?.autoSave) {
+            if (fileExists && !options?.skipCodeLossCheck && !options?.autoSave) {
                 const lines = content.split('\n');
                 const hasPlaceholder = lines.some(line => {
                     const trimmed = line.trim();
@@ -645,18 +648,22 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
                 // Only check shrink on full-file replacements
                 if (hasPlaceholder || (targetMember.length === 0 && sizeRatio < 0.4)) {
-                    const warningMsg = hasPlaceholder 
-                        ? `The AI generated code contains potential placeholders (like '...') which will break your file.`
-                        : `The new code is significantly smaller than the original (${Math.round(sizeRatio * 100)}% of original size). It might be incomplete.`;
+                    const warningMsg = hasPlaceholder
+                        ? `The AI generated code contains potential placeholders (like '...') which may omit existing code. Verify the diff below before accepting.`
+                        : `The new code is significantly smaller than the original (${Math.round(sizeRatio * 100)}% of original size). Verify the diff below before accepting.`;
 
-                    const choices = ["Apply Anyway", "Ask AI for Full Code", "Cancel"];
-                    const result = await vscode.window.showWarningMessage(
-                        `⚠️ Potential Placeholder Detected in ${filePath}: ${warningMsg}`,
-                        { modal: true },
-                        ...choices
-                    );
+                    const reviewDecision = await CodeLossReviewPanel.confirm({
+                        filePath: relativePath,
+                        title: hasPlaceholder
+                            ? `Potential Placeholder Detected in ${path.basename(relativePath)}`
+                            : `Potential Code Loss Detected in ${path.basename(relativePath)}`,
+                        reason: warningMsg,
+                        originalContent,
+                        proposedContent: finalWriteContent,
+                        allowAskAi: true
+                    });
 
-                    if (result === "Ask AI for Full Code") {
+                    if (reviewDecision === 'ask_ai') {
                         if (ChatPanel.currentPanel) {
                             ChatPanel.currentPanel.sendMessage({
                                 role: 'user',
@@ -665,9 +672,15 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                         }
                         return { success: false, error: "AI repair requested" };
                     }
-                    if (result !== "Apply Anyway") {
+                    if (reviewDecision !== 'accept') {
                         return { success: false, error: "User cancelled risky apply" };
                     }
+
+                    // User reviewed and accepted the diff directly in CodeLossReviewPanel; persist immediately
+                    await vscode.workspace.fs.writeFile(fileUri, Buffer.from(finalWriteContent, 'utf8'));
+                    services.contextManager.refreshFileInCache(fileUri);
+                    services.contextManager.getContextStateProvider()?.addFilesToContext([cleanPath]).catch(() => {});
+                    return { success: true, alreadyApplied: true };
                 }
             }
 

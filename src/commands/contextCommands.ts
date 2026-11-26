@@ -867,7 +867,17 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.exportContextContent', async () => {
         try {
-            const contextResult = await services.contextManager.getContextContent();
+            const activeDisc = ChatPanel.currentPanel?.getCurrentDiscussion();
+            const baseCaps = activeDisc?.capabilities || services.discussionManager.getLastCapabilities();
+            const exportMutedFiles = activeDisc?.mutedFiles || baseCaps?.mutedFiles || [];
+            const contextResult = await services.contextManager.getContextContent({
+                mutedFiles: exportMutedFiles,
+                capabilities: {
+                    ...baseCaps,
+                    isExport: true,
+                    mutedFiles: exportMutedFiles
+                }
+            });
             await vscode.env.clipboard.writeText(contextResult.text);
             vscode.window.showInformationMessage(vscode.l10n.t("info.contextCopied"));
         } catch (error: any) {

@@ -2584,9 +2584,16 @@ Apply the required modifications for this phase.`;
         const meaningful = history.filter(m => !m.skipInPrompt && m.role !== 'system');
         if (meaningful.length <= 1) return null;
 
-        const keepRecentCount = meaningful.length > 4 ? 2 : 1;
-        const olderHistory = meaningful.slice(0, meaningful.length - keepRecentCount);
-        const recentHistory = meaningful.slice(meaningful.length - keepRecentCount);
+        let splitIdx = meaningful.length - (meaningful.length > 4 ? 2 : 1);
+        const lastUserRevIdx = [...meaningful].reverse().findIndex(m => m.role === 'user');
+        if (lastUserRevIdx !== -1) {
+            const lastUserIdx = meaningful.length - 1 - lastUserRevIdx;
+            if (lastUserIdx < splitIdx) {
+                splitIdx = lastUserIdx;
+            }
+        }
+        const olderHistory = meaningful.slice(0, splitIdx);
+        const recentHistory = meaningful.slice(splitIdx);
 
         if (olderHistory.length === 0) return null;
 

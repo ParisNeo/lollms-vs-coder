@@ -4,7 +4,7 @@ import { ContextManager } from './contextManager';
 import { GitIntegration } from './gitIntegration';
 import { InfoPanel } from './commands/infoPanel';
 import { PlanParser } from './planParser';
-import { stripThinkingTags, getProcessedSystemPrompt, stripAnsiCodes, arePathsEqual, extractFileBlocks, parseFileTagAttributes, getContextLimitForModel, isProjectFile } from './utils';
+import { stripThinkingTags, getProcessedSystemPrompt, stripAnsiCodes, arePathsEqual, extractFileBlocks, parseFileTagAttributes, getContextLimitForModel, isProjectFile, findExplicitEndTag, detectInteractiveForm, detectUserInteractionDemand } from './utils';
 import { ProcessManager } from './processManager';
 import { DiscussionManager, Discussion } from './discussionManager';
 import * as fs from 'fs/promises';
@@ -1072,14 +1072,55 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
                 this.ui.updateGeneratingState();
             } else {
                 let fullResponse = "";
-                const response = await this.lollmsApi.sendChat(messages, (chunk) => {
-                    fullResponse += chunk;
-                    if (this.currentPlan) {
-                        this.currentPlan.scratchpad = fullResponse;
-                    }
-                }, signal, model);
+                let agentTurnEndedByTag = false;
+                const turnStreamController = new AbortController();
+                const onParentAbort = () => turnStreamController.abort();
+                if (signal.aborted) {
+                    turnStreamController.abort();
+                } else {
+                    signal.addEventListener('abort', onParentAbort, { once: true });
+                }
 
-                const cleanResponse = stripThinkingTags(response);
+                let response = "";
+                try {
+                    response = await this.lollmsApi.sendChat(messages, (chunk) => {
+                        if (signal.aborted || turnStreamController.signal.aborted) return;
+                        const prevLen = fullResponse.length;
+                        fullResponse += chunk;
+                        if (chunk.includes('>')) {
+                            const endMatch = findExplicitEndTag(fullResponse);
+                            if (endMatch) {
+                                agentTurnEndedByTag = true;
+                                fullResponse = fullResponse.slice(0, endMatch.endIndex);
+                                if (this.currentPlan) {
+                                    this.currentPlan.scratchpad = fullResponse;
+                                }
+                                turnStreamController.abort();
+                                return;
+                            }
+                        }
+                        if (this.currentPlan) {
+                            this.currentPlan.scratchpad = fullResponse;
+                        }
+                    }, turnStreamController.signal, model);
+                } catch (err: any) {
+                    if (agentTurnEndedByTag && !signal.aborted) {
+                        response = fullResponse;
+                    } else {
+                        throw err;
+                    }
+                } finally {
+                    signal.removeEventListener('abort', onParentAbort);
+                }
+
+                const effectiveRawResponse = agentTurnEndedByTag ? fullResponse : response;
+                const cleanResponse = stripThinkingTags(effectiveRawResponse);
+                const agentEndTagged = agentTurnEndedByTag || findExplicitEndTag(effectiveRawResponse) !== null;
+                const agentHasForm = detectInteractiveForm(cleanResponse);
+                const agentUserInteraction = detectUserInteractionDemand(cleanResponse, {
+                    hasPendingTools: false,
+                    allowDeleteFiles: this.currentDiscussion?.capabilities?.fileDelete !== false
+                });
 
                 if (this.currentPlan!.observations && this.currentPlan!.observations.length > 15) {
                     this.processManager?.updateDescription(processId, `Agentic Loop: Compressing memory timeline...`);
@@ -1115,11 +1156,21 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
                         this.completedActionsHistory.push(`[STEP ${codingTask.id}] COMPLETED: Applied code changes via Markdown Coding Mode.`);
 
                         await this.displayPlan(this.currentPlan);
+                        if (agentEndTagged || agentHasForm || agentUserInteraction.demanded) {
+                            await this.ui.addMessageToDiscussion({ role: 'assistant', content: cleanResponse, model });
+                            break;
+                        }
                         continue;
                     }
 
                     const trimmedResp = cleanResponse.trim();
                     if (trimmedResp.length > 0) {
+                        if (agentEndTagged || agentHasForm || agentUserInteraction.demanded) {
+                            this.completedActionsHistory.push(`[CONVERSATIONAL STOP]\n- REASON: ${agentHasForm ? 'form' : (agentEndTagged ? 'end_tag' : agentUserInteraction.reason)}\n- CONTENT: ${trimmedResp.substring(0, 200)}...`);
+                            await this.ui.addMessageToDiscussion({ role: 'assistant', content: cleanResponse, model });
+                            break;
+                        }
+
                         const looksLikeFileListArray = /\[\s*"[^"]+"\s*(?:,\s*"[^"]+"\s*)*\]/.test(trimmedResp);
                         const hasXmlToolLikeTag = /<(?:add_files_to_context|unmute_files|read_full_file|peek_files|grep|show_symbol|load_structure|query_architecture|lollms_tool)\b/i.test(trimmedResp);
 

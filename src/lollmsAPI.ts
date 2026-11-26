@@ -1502,6 +1502,10 @@ export class LollmsAPI {
                 buffer = lines.pop() || '';
 
                 for (const line of lines) {
+                    if (controller.signal.aborted || signal?.aborted) {
+                        onStreamAbort();
+                        break;
+                    }
                     const trimmed = line.trim();
                     if (!trimmed) continue;
 
@@ -1574,7 +1578,17 @@ export class LollmsAPI {
                         if (typeof onChunk === 'function') {
                             onChunk(formattedContent);
                         }
+                        if (controller.signal.aborted || signal?.aborted) {
+                            onStreamAbort();
+                            break;
+                        }
                     }
+                }
+                if (controller.signal.aborted || signal?.aborted) {
+                    onStreamAbort();
+                    const abortErr = new Error("AbortError");
+                    abortErr.name = "AbortError";
+                    throw abortErr;
                 }
             }
 

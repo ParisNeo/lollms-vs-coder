@@ -20,7 +20,10 @@ import {
     findHunkInWorkspace,
     stripAnsiCodes,
     isProjectFile,
-    arePathsEqual
+    arePathsEqual,
+    findExplicitEndTag,
+    detectInteractiveForm,
+    detectUserInteractionDemand
 } from '../../utils';
 import { LibrarianPromptBuilder } from '../../system_prompts/librarianPrompt';
 
@@ -52,6 +55,7 @@ import { LollmsServices } from '../../lollmsContext';
 import { ContextLibrarian } from '../../contextLibrarian';
 import { ContextPoisoningGate } from '../../security/contextPoisoningGate';
 import { AgentSecurityGuard, AgentSecurityLevel } from '../../security/agentSecurityGuard';
+import { CodeLossReviewPanel } from '../../panels/codeLossReviewPanel';
 
 interface ActiveGeneration {
     messageId: string;
@@ -545,6 +549,7 @@ export class ChatPanel {
                 continue;
             }
 
+            let codeLossAlreadyConfirmed = false;
             if (isAgent && this.agentManager) {
                 const res = await this._contextManager.resolveWorkspaceFromPath(filePath);
                 if (res) {
@@ -557,14 +562,31 @@ export class ChatPanel {
                     if (action === 'write') {
                         const val = AgentSecurityGuard.validateWriteContent(filePath, origText, fileBody, secLevel, true);
                         if (!val.valid && val.requiresConfirmation) {
-                            const dec = await this.agentManager.requestSecurityApproval(
-                                `Confirm File Write: ${filePath}`,
-                                val.reason || 'Potential code loss detected.',
-                                'markdown_coding',
+                            const reviewDecision = await CodeLossReviewPanel.confirm({
                                 filePath,
+                                title: `Confirm File Write (Potential Code Loss): ${path.basename(filePath)}`,
+                                reason: val.reason || 'Potential code loss detected.',
+                                originalContent: origText ?? '',
+                                proposedContent: fileBody,
+                                allowAskAi: false,
                                 signal
-                            );
-                            if (dec === 'block') continue;
+                            });
+                            if (reviewDecision !== 'accept') {
+                                this.agentManager.securityGuard.recordAudit({
+                                    verdict: 'blocked',
+                                    tool: 'markdown_coding',
+                                    target: filePath,
+                                    reason: val.reason || 'User rejected potential code loss after reviewing diff.'
+                                });
+                                continue;
+                            }
+                            this.agentManager.securityGuard.recordAudit({
+                                verdict: 'confirmed',
+                                tool: 'markdown_coding',
+                                target: filePath,
+                                reason: `${val.reason || 'Code loss check'} (accepted after diff review)`
+                            });
+                            codeLossAlreadyConfirmed = true;
                         } else if (!val.valid) {
                             this.log(`[Security Guard] Blocked unsafe write to ${filePath}: ${val.reason}`, 'WARN');
                             continue;
@@ -698,7 +720,7 @@ export class ChatPanel {
                 }
             } else {
                 const targetPath = symbol ? `${filePath}:${symbol}` : filePath;
-                const result: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', targetPath, fileBody, { silent: true, autoSave: true, messageId, blockIndex: currentBlockIndex, blockId });
+                const result: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', targetPath, fileBody, { silent: true, autoSave: true, messageId, blockIndex: currentBlockIndex, blockId, skipCodeLossCheck: codeLossAlreadyConfirmed });
                 if (result?.success) {
                     appliedCount++;
                     await this.updateAppliedState(messageId, currentBlockIndex);
@@ -3909,11 +3931,25 @@ Please provide the **FULL CONTENT** of the file instead using the format:
 
               const importedIds = this._currentDiscussion?.importedSkills || [];
               
+              const exportMutedFiles = this._currentDiscussion?.mutedFiles || this._discussionCapabilities?.mutedFiles || [];
+              const exportCapabilities: DiscussionCapabilities = {
+                  ...this._discussionCapabilities,
+                  agentMode: false,
+                  dynamicMode: false,
+                  sparqlEnabled: false,
+                  webSearch: false,
+                  projectMemoryEnabled: false,
+                  enableImages: false,
+                  isExport: true,
+                  mutedFiles: exportMutedFiles
+              };
+
               progress.report({ message: "Extracting file contents..." });
               const contextData = await this._contextManager.getContextContent({ 
                   importedSkillIds: importedIds,
+                  mutedFiles: exportMutedFiles,
                   modelName: this._currentDiscussion?.model || this._lollmsAPI.getModelName(),
-                  capabilities: this._discussionCapabilities
+                  capabilities: exportCapabilities
               });
               
               // --- MATRIX FILTERED EXPORT ---
@@ -3929,13 +3965,13 @@ Please provide the **FULL CONTENT** of the file instead using the format:
               let treeContent = contextData?.projectTree?.trim() || '';
               if (!treeContent || treeContent.length < 25) {
                   try {
-                      treeContent = await this._contextManager.generateProjectTree(undefined, undefined, this._discussionCapabilities);
+                      treeContent = await this._contextManager.generateProjectTree(undefined, undefined, exportCapabilities);
                   } catch {}
               }
               if (!treeContent || treeContent.length < 25) {
                   const allF = vscode.workspace.workspaceFolders || [];
                   for (const f of allF) {
-                      const iso = await this._contextManager.generateIsolatedProjectTree(f, undefined, this._discussionCapabilities);
+                      const iso = await this._contextManager.generateIsolatedProjectTree(f, undefined, exportCapabilities);
                       if (iso && iso.trim().length > 10) {
                           treeContent += `### 🌳 ${f.name.toUpperCase()} — FILE STRUCTURE\n${iso}\n`;
                       }
@@ -3958,16 +3994,6 @@ Please provide the **FULL CONTENT** of the file instead using the format:
 
               progress.report({ message: "Processing system prompt..." });
               const personaContent = this.getCurrentPersonaSystemPrompt();
-              const exportCapabilities: DiscussionCapabilities = {
-                  ...this._discussionCapabilities,
-                  agentMode: false,
-                  dynamicMode: false,
-                  sparqlEnabled: false,
-                  webSearch: false,
-                  projectMemoryEnabled: false,
-                  enableImages: false,
-                  isExport: true
-              };
               const exportContext = {
                   ...context,
                   tree: '',
@@ -5333,9 +5359,10 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
         const cutByCompressionFiles = new Set<string>();
         let consecutiveCompressionLoopCount = 0;
         let forceFinalAnswerNoTools = false;
-        let ghostRetriesCount = 0;
         let patchesAppliedInLoop = false;
         let formDetectedInTurn = false;
+        let userInteractionDemandedInTurn = false;
+        let endedByTagInTurn = false;
         let requestedMultiPhaseSplit = false;
         let multiPhaseStartedFromCoderPlan = false;
 
@@ -5592,17 +5619,40 @@ The user has CONFIRMED and VALIDATED your plan.
         const runTurn = async (isInsideMultiPhaseExecution: boolean = false) => {
             if (controller?.signal.aborted || currentTurnIndex >= maxTurnsLimit) {
                 if (currentTurnIndex >= maxTurnsLimit && !controller?.signal.aborted) {
-                    const limitNotice = `\n\n🛑 **AUTO-MODE ROUND LIMIT REACHED** (${maxTurnsLimit} rounds). Automation halted. Review the results above and continue manually if needed.`;
-                    currentFullResponseBuffer += limitNotice;
-                    fullResponse = currentFullResponseBuffer;
-                    await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer);
+                    const limitNotice = `🛑 **AUTO-MODE ROUND LIMIT REACHED** (${maxTurnsLimit} rounds). Automation halted. Review the results above and continue manually if needed.`;
+                    const limitMsgId = 'assistant_limit_' + Date.now().toString();
+                    await this.addMessageToDiscussion({
+                        id: limitMsgId,
+                        role: 'assistant',
+                        content: limitNotice,
+                        model: targetModel,
+                        personalityName: personaName,
+                        timestamp: Date.now()
+                    }, true);
                     if (!this._isDisposed && !this._activeMultiPartPlan) {
-                        this._panel.webview.postMessage({ command: 'finalizeMessage', id: assistantMessageId, fullContent: currentFullResponseBuffer });
+                        this._panel.webview.postMessage({ command: 'finalizeMessage', id: limitMsgId, fullContent: limitNotice });
                     }
                 }
                 return;
             }
             currentTurnIndex++;
+
+            if (currentTurnIndex > 1) {
+                assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
+                currentFullResponseBuffer = "";
+                fullResponse = "";
+                thinkTimings.length = 0;
+                firstTokenTimestamp = undefined;
+                await this.addMessageToDiscussion({
+                    id: assistantMessageId,
+                    role: 'assistant',
+                    content: '',
+                    startTime: Date.now(),
+                    model: targetModel,
+                    personalityName: personaName,
+                    timestamp: Date.now()
+                }, true);
+            }
 
             if (consecutiveFailsCount >= maxFailsAllowed) {
                 const finalErrorMsg = `\n\n🛑 **ASSISTANT TERMINATED**: Exceeded maximum self-correction retries (${maxFailsAllowed}). Please adjust your prompt.`;
@@ -5652,16 +5702,48 @@ The user has CONFIRMED and VALIDATED your plan.
             const bufferBeforeTurn = currentFullResponseBuffer;
 
             let turnResponse = "";
+            let turnEndedByTag = false;
+            const turnStreamController = new AbortController();
+            const onParentAbort = () => turnStreamController.abort();
+            if (controller.signal.aborted) {
+                turnStreamController.abort();
+            } else {
+                controller.signal.addEventListener('abort', onParentAbort, { once: true });
+            }
+
             this.processManager.updateDescription(processId, isFastMode ? "Coding..." : `Assistant Turn ${currentTurnIndex}: Reasoning & Evaluating...`);
             this.updateGeneratingState();
 
             try {
                 await this._lollmsAPI.sendChat(loopMessages, (chunk) => {
-                    if (controller?.signal.aborted) return;
+                    if (controller?.signal.aborted || turnStreamController.signal.aborted) return;
                     if (firstTokenTimestamp === undefined) {
                         firstTokenTimestamp = Date.now();
                     }
+                    const prevLen = turnResponse.length;
                     turnResponse += chunk;
+
+                    if (chunk.includes('>')) {
+                        const endMatch = findExplicitEndTag(turnResponse);
+                        if (endMatch) {
+                            turnEndedByTag = true;
+                            const acceptedChunk = turnResponse.slice(prevLen, endMatch.endIndex);
+                            turnResponse = turnResponse.slice(0, endMatch.endIndex);
+                            currentFullResponseBuffer = bufferBeforeTurn + turnResponse;
+                            fullResponse = currentFullResponseBuffer;
+                            this.updateThinkTimingsFromBuffer(currentFullResponseBuffer, thinkTimings, firstTokenTimestamp);
+                            if (acceptedChunk) {
+                                this._panel.webview.postMessage({
+                                    command: 'appendMessageChunk',
+                                    id: assistantMessageId,
+                                    chunk: acceptedChunk
+                                });
+                            }
+                            turnStreamController.abort();
+                            return;
+                        }
+                    }
+
                     currentFullResponseBuffer += chunk;
                     fullResponse = currentFullResponseBuffer;
                     this.updateThinkTimingsFromBuffer(currentFullResponseBuffer, thinkTimings, firstTokenTimestamp);
@@ -5671,16 +5753,19 @@ The user has CONFIRMED and VALIDATED your plan.
                         id: assistantMessageId, 
                         chunk: chunk 
                     });
-                }, controller.signal, this._currentDiscussion!.model, {
+                }, turnStreamController.signal, this._currentDiscussion!.model, {
                     capabilities: this._discussionCapabilities,
                     temperature: this._discussionCapabilities.enableTemperature ? this._discussionCapabilities.temperature : undefined,
                     maxTokens: this._discussionCapabilities.enableMaxTokens ? this._discussionCapabilities.maxTokens : undefined
                 });
             } catch (err: any) {
-                if (err.name !== 'AbortError') {
+                if (turnEndedByTag && !controller?.signal.aborted) {
+                    this.log(`[Turn ${currentTurnIndex}] Stream stopped immediately upon explicit end tag.`, 'INFO');
+                } else {
                     throw err;
                 }
-                throw err;
+            } finally {
+                controller.signal.removeEventListener('abort', onParentAbort);
             }
 
             if (controller?.signal.aborted) {
@@ -5705,18 +5790,9 @@ The user has CONFIRMED and VALIDATED your plan.
                 });
             }
 
-            const requiresEndTagCap = (this._discussionCapabilities as any).requireExplicitEndTag === true ||
-                (this._currentDiscussion?.capabilities as any)?.requireExplicitEndTag === true;
-            const strippedForEndTag = stripThinkingTags(turnResponse)
-                .replace(/<file\b[^>]*>[\s\S]*?(?:<\/file>|$)/gi, '')
-                .replace(/```[\s\S]*?(?:```|$)/g, '')
-                .replace(/`[^`\r\n]+`/g, '');
-            const turnEndTagged = /<(?:\/?(?:end|done))\b[^>]*>/i.test(strippedForEndTag);
-
-            // Rule 2: If Auto Mode is OFF (and explicit end tag is not required), do a single round and let the user decide what to do and manually press buttons.
-            if ((!isAutoModeActive && !requiresEndTagCap && !this._discussionCapabilities.autoApply) || forceFinalAnswerNoTools) {
+            const finalizeAndSaveTurn = async (textToPersist?: string) => {
                 const finalThinkDurations = this.finalizeThinkTimings(thinkTimings);
-                const cleanFinalText = stripThinkingTags(currentFullResponseBuffer).trim();
+                const cleanFinalText = (textToPersist !== undefined ? textToPersist : stripThinkingTags(currentFullResponseBuffer)).trim();
                 const finalAssistantMessage: ChatMessage = {
                     id: assistantMessageId,
                     role: 'assistant',
@@ -5753,6 +5829,19 @@ The user has CONFIRMED and VALIDATED your plan.
                     }
                     this._panel.webview.postMessage({ command: 'collapseLibrarianMessages' });
                 }
+            };
+
+            const requiresEndTagCap = (this._discussionCapabilities as any).requireExplicitEndTag === true ||
+                (this._currentDiscussion?.capabilities as any)?.requireExplicitEndTag === true;
+            const endTagMatchAfterRepair = findExplicitEndTag(turnResponse);
+            const turnEndTagged = turnEndedByTag || endTagMatchAfterRepair !== null;
+            if (turnEndTagged) {
+                endedByTagInTurn = true;
+            }
+
+            // Rule 2: If Auto Mode is OFF (and explicit end tag is not required), do a single round and let the user decide what to do and manually press buttons.
+            if ((!isAutoModeActive && !requiresEndTagCap && !this._discussionCapabilities.autoApply) || forceFinalAnswerNoTools) {
+                await finalizeAndSaveTurn();
                 return;
             }
 
@@ -5839,104 +5928,35 @@ The user has CONFIRMED and VALIDATED your plan.
             }
             const turnHasFileUpdates = turnBlockCounts.xmlCount > 0 || turnBlockCounts.fencedCount > 0 || hasDeleteFilesInTurn;
 
-            const lollmsFormRegex = /<lollms_form\b[^>]*>[\s\S]*?<\/lollms_form>/gi;
-            const htmlFormRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<form\b[^>]*>[\s\S]*?<\/form>/gim;
-            let turnHasForm = false;
-            let formMatchCheck: RegExpExecArray | null;
-            while ((formMatchCheck = lollmsFormRegex.exec(scannableTurn)) !== null) {
-                if (!isIndexInsideFence(formMatchCheck.index)) {
-                    turnHasForm = true;
-                    break;
-                }
-            }
-            if (!turnHasForm) {
-                while ((formMatchCheck = htmlFormRegex.exec(scannableTurn)) !== null) {
-                    if (!isIndexInsideFence(formMatchCheck.index)) {
-                        turnHasForm = true;
-                        break;
-                    }
-                }
-            }
+            const turnHasForm = detectInteractiveForm(scannableTurn, isIndexInsideFence);
 
-            // If an interactive form is detected, stop rounding immediately and wait for the user to answer
+            // Stop Cause 1: If the LLM issues a form, stop running immediately and wait for the user to answer
             if (turnHasForm) {
                 formDetectedInTurn = true;
                 this.log(`[Auto Mode] Interactive form detected: stopping rounds and waiting for user answer.`, 'INFO');
-                const finalThinkDurations = this.finalizeThinkTimings(thinkTimings);
-                const finalAssistantMessage: ChatMessage = {
-                    id: assistantMessageId,
-                    role: 'assistant',
-                    content: currentFullResponseBuffer.trim(),
-                    model: targetModel,
-                    personalityName: personaName,
-                    timestamp: Date.now(),
-                    ...(finalThinkDurations.length > 0 ? { thinkDurations: finalThinkDurations } : {})
-                };
-
-                const msgIdx = this._currentDiscussion!.messages.findIndex(m => m.id === assistantMessageId);
-                if (msgIdx !== -1) {
-                    this._currentDiscussion!.messages[msgIdx] = finalAssistantMessage;
-                }
-                if (this._currentDiscussion!.llmHistory) {
-                    const llmIdx = this._currentDiscussion!.llmHistory.findIndex(m => m.id === assistantMessageId);
-                    if (llmIdx !== -1) {
-                        this._currentDiscussion!.llmHistory[llmIdx] = finalAssistantMessage;
-                    }
-                }
-                if (!this._currentDiscussion!.id.startsWith('temp-')) {
-                    await this._discussionManager.saveDiscussion(this._currentDiscussion!);
-                }
-
-                if (!this._isDisposed) {
-                    if (!this._activeMultiPartPlan) {
-                        this._panel.webview.postMessage({ 
-                            command: 'finalizeMessage', 
-                            id: assistantMessageId, 
-                            fullContent: currentFullResponseBuffer,
-                            ...(finalThinkDurations.length > 0 ? { thinkDurations: finalThinkDurations } : {})
-                        });
-                    }
-                }
                 forceFinalAnswerNoTools = true;
+                await finalizeAndSaveTurn(currentFullResponseBuffer);
                 return;
             }
 
-            // If <delete_files> was demanded, do NOT execute any auto execution — prompt the user and stop there
+            // If <delete_files> was demanded, halt auto execution to prompt the user and stop there
             if (hasDeleteFilesInTurn) {
+                userInteractionDemandedInTurn = true;
                 this.log(`[Auto Mode] <delete_files> detected: halting auto execution to prompt user.`, 'INFO');
-                const cleanFinalText = stripThinkingTags(currentFullResponseBuffer).trim();
-                const finalAssistantMessage: ChatMessage = {
-                    id: assistantMessageId,
-                    role: 'assistant',
-                    content: cleanFinalText,
-                    model: targetModel,
-                    personalityName: personaName,
-                    timestamp: Date.now()
-                };
-                const msgIdx = this._currentDiscussion!.messages.findIndex(m => m.id === assistantMessageId);
-                if (msgIdx !== -1) this._currentDiscussion!.messages[msgIdx] = finalAssistantMessage;
-                if (this._currentDiscussion!.llmHistory) {
-                    const llmIdx = this._currentDiscussion!.llmHistory.findIndex(m => m.id === assistantMessageId);
-                    if (llmIdx !== -1) this._currentDiscussion!.llmHistory[llmIdx] = finalAssistantMessage;
-                }
-                if (!this._currentDiscussion!.id.startsWith('temp-')) {
-                    await this._discussionManager.saveDiscussion(this._currentDiscussion!);
-                }
-                if (!this._isDisposed) {
-                    this._panel.webview.postMessage({
-                        command: 'finalizeMessage',
-                        id: assistantMessageId,
-                        fullContent: currentFullResponseBuffer,
-                        appliedState: this._currentDiscussion?.appliedState?.[assistantMessageId]
-                    });
-                    this._panel.webview.postMessage({ command: 'collapseLibrarianMessages' });
-                }
                 forceFinalAnswerNoTools = true;
+                await finalizeAndSaveTurn();
                 return;
             }
 
-            // Rule 1.5 continuation: If the coder responded with a multi-phase <plan> (and no patches/tools), spin off multi-phase execution
-            if (!isInsideMultiPhaseExecution && !turnHasFileUpdates && discoveredActions.length === 0) {
+            const userInteractionCheck = detectUserInteractionDemand(scannableTurn, {
+                isProtected: isIndexInsideFence,
+                hasPendingTools: discoveredActions.length > 0 && isAutoModeActive,
+                allowDeleteFiles: this._discussionCapabilities.fileDelete !== false,
+                discoveredActions
+            });
+
+            // Rule 1.5 continuation: If the coder responded with a multi-phase <plan> (and no patches/tools/stop signals), spin off multi-phase execution
+            if (!isInsideMultiPhaseExecution && !turnHasFileUpdates && discoveredActions.length === 0 && !turnEndTagged && !userInteractionCheck.demanded) {
                 const coderPlan = parseCoderMultiPhasePlan(scannableTurn);
                 if (coderPlan && coderPlan.parts.length > 0) {
                     this.log(`[Auto Mode - Rule 1.5] Coder generated a ${coderPlan.parts.length}-phase execution plan. Starting sequential phases...`, 'INFO');
@@ -5957,7 +5977,7 @@ The user has CONFIRMED and VALIDATED your plan.
             if (turnHasFileUpdates && shouldAutoApplyTurn) {
                 const verification = await this.verifyGeneratedPatchContext(turnResponse);
                 if (!verification.valid) {
-                    if (discoveredActions.length === 0) {
+                    if (discoveredActions.length === 0 && !turnEndTagged && !userInteractionCheck.demanded) {
                         this.log(`[Auto Mode - Rule 1.2] Blind patch blocked on unseen files: [${verification.unpossessedFiles.join(', ')}]`, 'WARN');
                         await this.handleContextVerifierFailure(verification.unpossessedFiles, isFastMode, controller.signal, processId);
                         patchesAppliedInLoop = true;
@@ -5973,7 +5993,7 @@ The user has CONFIRMED and VALIDATED your plan.
                         fencedBlockIndexOffset: priorBlockOffsets.fencedCount,
                         skipContextTools: discoveredActions.length > 0,
                         autoFix: this._discussionCapabilities.autoFix !== false,
-                        skipGuardianRepairLoop: isInsideMultiPhaseExecution || discoveredActions.length > 0
+                        skipGuardianRepairLoop: isInsideMultiPhaseExecution || discoveredActions.length > 0 || turnEndTagged || userInteractionCheck.demanded
                     });
                     patchesAppliedInLoop = true;
                     if (pipeRes.modifiedFiles.length > 0) {
@@ -5983,6 +6003,24 @@ The user has CONFIRMED and VALIDATED your plan.
                         turnPatchReport = `✅ **Patches Applied (${pipeRes.appliedCount})**: [${pipeRes.modifiedFiles.join(', ')}] saved on disk.${failedDesc}\n`;
                     }
                 }
+            }
+
+            // Stop Cause 4: Explicit end tag emitted -> stop immediately without continuing tool/re-prompt loops
+            if (turnEndTagged) {
+                endedByTagInTurn = true;
+                this.log(`[Auto Mode] Explicit end tag detected: stopping immediately.`, 'INFO');
+                forceFinalAnswerNoTools = true;
+                await finalizeAndSaveTurn(currentFullResponseBuffer);
+                return;
+            }
+
+            // Stop Cause 2: LLM demands user interaction -> stop running and wait for user
+            if (userInteractionCheck.demanded) {
+                userInteractionDemandedInTurn = true;
+                this.log(`[Auto Mode] User interaction demanded (${userInteractionCheck.reason}): stopping loop.`, 'INFO');
+                forceFinalAnswerNoTools = true;
+                await finalizeAndSaveTurn(currentFullResponseBuffer);
+                return;
             }
 
             if (discoveredActions.length > 0 && isAutoModeActive) {
@@ -6843,7 +6881,7 @@ The user has CONFIRMED and VALIDATED your plan.
                     consecutiveFailsCount++;
                 }
 
-                await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer);
+                await finalizeAndSaveTurn(currentFullResponseBuffer);
 
                 const assistantTurnMsg: ChatMessage = { role: 'assistant', content: stripThinkingTags(turnResponse).trim() };
 
@@ -6994,98 +7032,9 @@ Respond immediately.`
                 await runTurn(isInsideMultiPhaseExecution);
                 return;
             } else {
-                // Ghost completion & intent-without-action circuit breaker
-                const normalizedTurn = normalizePseudoFileBlocks(turnResponse);
-                const turnHasCode = normalizedTurn.includes('<file') || normalizedTurn.includes('<<<<<<< SEARCH');
-                const turnHasStructuredEnd = /<(?:plan|user_instruction|lollms_form|form|delete_files|delete_file)\b/i.test(scannableTurn) ||
-                    /summary of changes/i.test(scannableTurn);
-
-                const textLower = turnResponse.toLowerCase();
-                const claimsApplied = textLower.includes('successfully applied') ||
-                    textLower.includes('have been applied') ||
-                    textLower.includes('changes have been applied') ||
-                    textLower.includes('fixes have been') ||
-                    textLower.includes('summary of changes') ||
-                    textLower.includes('updated the following') ||
-                    textLower.includes('modified the following') ||
-                    textLower.includes('files have been updated') ||
-                    textLower.includes('files have been modified') ||
-                    textLower.includes('implemented the changes') ||
-                    textLower.includes('finished phase 3') ||
-                    textLower.includes('finished stage 3') ||
-                    textLower.includes('completed stage 3') ||
-                    textLower.includes('completed phase 3');
-
-                const statesIntentWithoutAction = !turnHasCode &&
-                    !turnHasStructuredEnd &&
-                    /\b(?:i will now|i'll now|let me|let's|i am going to|i'm going to|next,?\s+i(?:'ll| will)|now i(?:'ll| will)|first,?\s+i(?:'ll| will)|i need to (?:check|inspect|read|look|examine|update|modify))\b/i.test(scannableTurn);
-
-                const isGhostCompletion = (isPlanConfirmation || claimsApplied || statesIntentWithoutAction) && !turnHasCode && ghostRetriesCount < 2;
-
-                if (isGhostCompletion) {
-                    ghostRetriesCount++;
-                    this.log(`Incomplete/stalling turn detected (${statesIntentWithoutAction ? 'intent-without-action' : 'ghost-completion'}). Enforcing structured completion...`, "WARN");
-
-                    loopMessages.push({ role: 'assistant', content: stripThinkingTags(turnResponse).trim() });
-                    loopMessages.push({
-                        role: 'user',
-                        content: statesIntentWithoutAction
-                            ? `### 🛑 PROTOCOL ENFORCEMENT: INCOMPLETE TURN (INTENT WITHOUT ACTION)
-You stated what you intend to do next, but you did NOT emit any tool tags or \`<file>\` mutation tags!
-Do NOT stop and wait for "continue".
-
-**MANDATORY IMMEDIATE ACTION:**
-Execute your intent right now using the proper structured tags:
-- To inspect/load context: emit \`<load_structure>\`, \`<show_symbol>\`, \`<manage_symbols>\`, \`<unmute_files>\`, \`<add_files_to_context>\`, \`<grep>\`, or \`<sparql>\`.
-- To apply code changes: emit \`<file path="..." action="write|patch|update_symbol">\` tags followed by \`### 📋 Summary of Changes\`.
-Proceed immediately with the complete structured response.`
-                            : `### 🛑 CRITICAL PROTOCOL BREACH: ZERO FILE TAGS EMITTED
-You stated that changes were applied/implemented, but you did NOT output any \`<file path="..." action="...">\` tags!
-Describing code changes in prose does NOT modify files on disk. The files are completely unchanged.
-
-**MANDATORY IMMEDIATE ACTION:**
-You MUST output the code updates inside \`<file path="..." action="write|patch|update_symbol">\` XML tags right now for every file you mentioned!
-Do NOT repeat the verbal summary. Output the code tags now.`
-                    });
-                    loopMessages = ensureStrictAlternatingRoles(loopMessages);
-
-                    await runTurn(isInsideMultiPhaseExecution);
-                    return;
-                }
-                
-                const finalAssistantMessage: ChatMessage = {
-                    id: assistantMessageId,
-                    role: 'assistant',
-                    content: currentFullResponseBuffer.trim(),
-                    model: targetModel,
-                    personalityName: personaName,
-                    timestamp: Date.now()
-                };
-
-                const msgIdx = this._currentDiscussion!.messages.findIndex(m => m.id === assistantMessageId);
-                if (msgIdx !== -1) {
-                    this._currentDiscussion!.messages[msgIdx] = finalAssistantMessage;
-                }
-                if (this._currentDiscussion!.llmHistory) {
-                    const llmIdx = this._currentDiscussion!.llmHistory.findIndex(m => m.id === assistantMessageId);
-                    if (llmIdx !== -1) {
-                        this._currentDiscussion!.llmHistory[llmIdx] = finalAssistantMessage;
-                    }
-                }
-                if (!this._currentDiscussion!.id.startsWith('temp-')) {
-                    await this._discussionManager.saveDiscussion(this._currentDiscussion!);
-                }
-
-                if (!this._isDisposed) {
-                    if (!this._activeMultiPartPlan) {
-                        this._panel.webview.postMessage({ 
-                            command: 'finalizeMessage', 
-                            id: assistantMessageId, 
-                            fullContent: currentFullResponseBuffer 
-                        });
-                    }
-                    this._panel.webview.postMessage({ command: 'collapseLibrarianMessages' });
-                }
+                // Stop Cause 3: No pending tool call / no further continuation required when requireExplicitEndTag is off -> stop cleanly
+                this.log(`[Auto Mode] Stopping cleanly (discoveredActions=${discoveredActions.length}, turnHasFileUpdates=${turnHasFileUpdates}, requireExplicitEndTag=${requiresEndTagCap}).`, 'INFO');
+                await finalizeAndSaveTurn(currentFullResponseBuffer);
             }
         };
 
@@ -7129,7 +7078,7 @@ Do NOT repeat the verbal summary. Output the code tags now.`
         }
 
         // ── CONCATENATE ALL STEPS INTO A SINGLE UNIFIED MESSAGE ──
-        if (!formDetectedInTurn && this._activeMultiPartPlan && Array.isArray(this._activeMultiPartPlan.parts) && !controller?.signal.aborted) {
+        if (!formDetectedInTurn && !userInteractionDemandedInTurn && !endedByTagInTurn && this._activeMultiPartPlan && Array.isArray(this._activeMultiPartPlan.parts) && !controller?.signal.aborted) {
             const totalParts = this._activeMultiPartPlan.totalParts || this._activeMultiPartPlan.parts.length;
             while (this._activeMultiPartPlan.currentPartIndex + 1 < totalParts && !controller?.signal.aborted) {
                 const currentIdx = this._activeMultiPartPlan.currentPartIndex;
@@ -7249,11 +7198,42 @@ ${phaseSigs}${phaseTargets}> 🎯 **Instructions for Implementation**:
                 phaseMessages.push(stepUserPrompt);
                 const strictPhaseMsgs = ensureStrictAlternatingRoles(phaseMessages);
 
+                let phaseResponse = "";
+                let phaseEndedByTag = false;
+                const phaseStreamCtrl = new AbortController();
+                const onPhaseParentAbort = () => phaseStreamCtrl.abort();
+                if (controller.signal.aborted) {
+                    phaseStreamCtrl.abort();
+                } else {
+                    controller.signal.addEventListener('abort', onPhaseParentAbort, { once: true });
+                }
+
                 try {
                     await this._lollmsAPI.sendChat(
                         strictPhaseMsgs,
                         (chunk) => {
-                            if (controller?.signal.aborted) return;
+                            if (controller?.signal.aborted || phaseStreamCtrl.signal.aborted) return;
+                            const prevLen = phaseResponse.length;
+                            phaseResponse += chunk;
+                            if (chunk.includes('>')) {
+                                const endMatch = findExplicitEndTag(phaseResponse);
+                                if (endMatch) {
+                                    phaseEndedByTag = true;
+                                    const accepted = phaseResponse.slice(prevLen, endMatch.endIndex);
+                                    phaseResponse = phaseResponse.slice(0, endMatch.endIndex);
+                                    if (accepted) {
+                                        currentFullResponseBuffer += accepted;
+                                        fullResponse = currentFullResponseBuffer;
+                                        this._panel.webview.postMessage({
+                                            command: 'appendMessageChunk',
+                                            id: assistantMessageId,
+                                            chunk: accepted
+                                        });
+                                    }
+                                    phaseStreamCtrl.abort();
+                                    return;
+                                }
+                            }
                             currentFullResponseBuffer += chunk;
                             fullResponse = currentFullResponseBuffer;
                             this._panel.webview.postMessage({
@@ -7262,7 +7242,7 @@ ${phaseSigs}${phaseTargets}> 🎯 **Instructions for Implementation**:
                                 chunk
                             });
                         },
-                        controller.signal,
+                        phaseStreamCtrl.signal,
                         targetModel,
                         {
                             capabilities: this._discussionCapabilities,
@@ -7271,9 +7251,19 @@ ${phaseSigs}${phaseTargets}> 🎯 **Instructions for Implementation**:
                         }
                     );
                 } catch (stepErr: any) {
-                    if (stepErr.name !== 'AbortError') {
+                    if (phaseEndedByTag && !controller?.signal.aborted) {
+                        this.log(`Multi-step part ${nextPartIdx + 1} stopped immediately on explicit end tag.`, 'INFO');
+                    } else if (stepErr.name !== 'AbortError') {
                         this.log(`Multi-step part ${nextPartIdx + 1} error: ${stepErr.message}`, 'WARN');
+                        break;
+                    } else {
+                        break;
                     }
+                } finally {
+                    controller.signal.removeEventListener('abort', onPhaseParentAbort);
+                }
+
+                if (phaseEndedByTag || detectInteractiveForm(phaseResponse) || detectUserInteractionDemand(phaseResponse, { allowDeleteFiles: this._discussionCapabilities.fileDelete !== false }).demanded) {
                     break;
                 }
             }
@@ -12114,7 +12104,7 @@ Task:
                             const resPath = await this._contextManager.resolveWorkspaceFromPath(cleanP);
                             if (resPath) this._contextManager.refreshFileInCache(resPath.uri);
                         }
-                        if (opts.silent) {
+                        if (opts.silent || res.alreadyApplied) {
                             webview.postMessage({
                                 command: 'applyAllResult',
                                 messageId: message.messageId,
@@ -13173,6 +13163,29 @@ ${itemizedReports.join('\n\n---\n\n')}
             case 'forkAndCompressDiscussion':
                 await vscode.commands.executeCommand('lollms-vs-coder.forkAndCompressDiscussion', this);
                 break;
+            case 'toggleLlmHistoryView':
+                {
+                    if (!this._currentDiscussion) break;
+                    const showLlm = message.showLlmHistory === true;
+                    if (showLlm) {
+                        const rawMsgs = (this._currentDiscussion.llmHistory && this._currentDiscussion.llmHistory.length > 0)
+                            ? this._currentDiscussion.llmHistory
+                            : (this._currentDiscussion.messages || []).filter(m => !m.skipInPrompt);
+                        const sanitized = rawMsgs.map((m, idx) => ({
+                            ...m,
+                            id: m.id || `llm_hist_${idx}_${Date.now()}`,
+                            content: this.sanitizeMessageContentForPrompt(m.content)
+                        }));
+                        this._panel.webview.postMessage({
+                            command: 'renderLlmHistoryView',
+                            messages: sanitized,
+                            isLlmView: true
+                        });
+                    } else {
+                        await this.loadDiscussion();
+                    }
+                }
+                break;
             case 'requestBriefingFileUpload':
             {
                 const uris = await vscode.window.showOpenDialog({
@@ -13654,7 +13667,7 @@ ${itemizedReports.join('\n\n---\n\n')}
               if (fm && fm[1][0] === openFence.char && fm[1].length >= openFence.len && (fm[2] || '').trim() === '') {
                   const innerTrim = text.slice(openFence.bodyStart, lineStart).trim();
                   const isToolWrapperFence = options?.keepToolWrapperFences &&
-                      (!openFence.langHint || ['xml', 'tool', 'tools', 'sparql'].includes(openFence.langHint)) &&
+                      (!openFence.langHint || ['xml', 'tool', 'tools', 'sparql', 'form', 'lollms_form'].includes(openFence.langHint)) &&
                       innerTrim.startsWith('<') &&
                       toolTagNamesPattern.test(innerTrim.substring(1));
                   if (!isToolWrapperFence) {
@@ -14349,7 +14362,13 @@ ${itemizedReports.join('\n\n---\n\n')}
           }
       }
 
-      const splitEndIdx = lastAssistantIdx !== -1 ? lastAssistantIdx + 1 : activeHistory.length;
+      let splitEndIdx = lastAssistantIdx !== -1 ? lastAssistantIdx + 1 : activeHistory.length;
+      if (lastAssistantIdx === -1) {
+          const lastUserRevIdx = [...activeHistory].reverse().findIndex(m => m.role === 'user');
+          if (lastUserRevIdx !== -1) {
+              splitEndIdx = activeHistory.length - 1 - lastUserRevIdx;
+          }
+      }
       const sliceToCompress = activeHistory.slice(0, splitEndIdx);
       const trailingHistory = activeHistory.slice(splitEndIdx);
 
@@ -15872,10 +15891,25 @@ Generate the surgical fix to resolve these errors.`;
               const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
               const importedIds = this._currentDiscussion?.importedSkills || [];
               
+              const exportMutedFiles = this._currentDiscussion?.mutedFiles || this._discussionCapabilities?.mutedFiles || [];
+              const exportCapabilities: DiscussionCapabilities = {
+                  ...this._discussionCapabilities,
+                  agentMode: false,
+                  dynamicMode: false,
+                  sparqlEnabled: false,
+                  webSearch: false,
+                  projectMemoryEnabled: false,
+                  enableImages: false,
+                  isExport: true,
+                  mutedFiles: exportMutedFiles
+              };
+
               progress.report({ message: "Reading context..." });
               const contextData = await this._contextManager.getContextContent({ 
                   importedSkillIds: importedIds,
-                  modelName: this._currentDiscussion?.model || this._lollmsAPI.getModelName()
+                  mutedFiles: exportMutedFiles,
+                  modelName: this._currentDiscussion?.model || this._lollmsAPI.getModelName(),
+                  capabilities: exportCapabilities
               });
               
               const context = {
@@ -15887,16 +15921,6 @@ Generate the surgical fix to resolve these errors.`;
 
               progress.report({ message: "Generating Persona..." });
               const personaContent = this.getCurrentPersonaSystemPrompt();
-              const exportCapabilities: DiscussionCapabilities = {
-                  ...this._discussionCapabilities,
-                  agentMode: false,
-                  dynamicMode: false,
-                  sparqlEnabled: false,
-                  webSearch: false,
-                  projectMemoryEnabled: false,
-                  enableImages: false,
-                  isExport: true
-              };
               const exportContext = {
                   ...context,
                   governorReport: (contextData as any)?.governorReport || await this._contextManager.getStructureGuide(),

@@ -728,7 +728,8 @@ private _cachedTreeString: string | null = null;
     baseFolder: vscode.WorkspaceFolder,
     rootName: string = '',
     maxFilesInFolder: number = 30,
-    mutedFiles: string[] = []
+    mutedFiles: string[] = [],
+    isExport: boolean = false
   ): string {
     const lines: string[] = [];
 
@@ -744,7 +745,7 @@ private _cachedTreeString: string | null = null;
       });
 
       let tag = '';
-      if (isMuted) tag = '[M]';
+      if (isMuted) tag = isExport ? '' : '[M]';
       else if (fileState === 'included') tag = '[C]';
       else if (fileState === 'definitions-only') tag = '[D]';
 
@@ -864,7 +865,8 @@ private _cachedTreeString: string | null = null;
           .map((m: string) => m.replace(/\\/g, '/').toLowerCase().trim())
           .sort()
           .join('|');
-      const cacheKey = `${folder.uri.toString()}-${JSON.stringify(capabilities?.folderSettings || {})}-${includedHash}-${normalizedMuted}`;
+      const isExport = capabilities?.isExport === true;
+      const cacheKey = `${folder.uri.toString()}-${JSON.stringify(capabilities?.folderSettings || {})}-${includedHash}-${normalizedMuted}-${isExport ? 'export' : 'internal'}`;
 
       const cachedIsolated = this._cachedIsolatedTrees.get(cacheKey);
       if (cachedIsolated && cachedIsolated.trim().length > 30 && !this._isTreeDirty) {
@@ -988,7 +990,7 @@ private _cachedTreeString: string | null = null;
       const isMultiRoot = (vscode.workspace.workspaceFolders || []).length > 1;
       const mutedFilesList = capabilities?.mutedFiles || [];
       let treeString = '```text\n';
-      const renderedHierarchy = this.renderIndentedScopeHierarchy(projectTreeObj, folder, isMultiRoot ? folder.name : '', 30, mutedFilesList);
+      const renderedHierarchy = this.renderIndentedScopeHierarchy(projectTreeObj, folder, isMultiRoot ? folder.name : '', 30, mutedFilesList, isExport);
       treeString += (renderedHierarchy && renderedHierarchy.trim()) ? renderedHierarchy : `./: [workspace root]\n`;
       treeString += '\n```\n';
 
@@ -1041,7 +1043,8 @@ private _cachedTreeString: string | null = null;
           .map((m: string) => m.replace(/\\/g, '/').toLowerCase().trim())
           .sort()
           .join('|');
-      const projectTreeCacheKey = `${folders.map(f => f.uri.toString()).join(',')}-${JSON.stringify(folderSettings)}-${filesHash}-${normalizedMuted}`;
+      const isExport = capabilities?.isExport === true;
+      const projectTreeCacheKey = `${folders.map(f => f.uri.toString()).join(',')}-${JSON.stringify(folderSettings)}-${filesHash}-${normalizedMuted}-${isExport ? 'export' : 'internal'}`;
 
       const cachedTree = this._cachedProjectTreeMap.get(projectTreeCacheKey);
       if (cachedTree && cachedTree.trim().length > 30 && !this._isTreeDirty && !cachedTree.includes('(All project structures hidden)')) {
@@ -1154,7 +1157,7 @@ private _cachedTreeString: string | null = null;
         const subTreeObj = isMultiRoot ? this._fileTreeObject[folder.name] : this._fileTreeObject;
         if (subTreeObj) {
           const mutedFilesList = capabilities?.mutedFiles || [];
-          const manifest = this.renderIndentedScopeHierarchy(subTreeObj, folder, isMultiRoot ? folder.name : '', 30, mutedFilesList);
+          const manifest = this.renderIndentedScopeHierarchy(subTreeObj, folder, isMultiRoot ? folder.name : '', 30, mutedFilesList, isExport);
           if (manifest.trim()) {
             treeString += manifest + '\n';
           }
@@ -1435,7 +1438,7 @@ private _cachedTreeString: string | null = null;
     result.text = `# 🏢 SOVEREIGN WORKSPACE STRUCTURE\n`;
     result.text += `You are operating in an environment with ${activeFolders.length} active project root(s).\n\n`;
 
-    const isAgentMode = options?.capabilities?.agentMode === true;
+    const isExportContext = options?.capabilities?.isExport === true;
     result.text += `### 🌐 HOW TO INTERACT\n`;
     if (activeFolders.length > 1) {
         result.text += `1. **Addressing**: Address files using the namespaced path: \`ProjectName/path/to/file.ext\` matching the project header.\n`;
@@ -1443,33 +1446,37 @@ private _cachedTreeString: string | null = null;
         result.text += `1. **Addressing**: Address files using their exact relative path from the workspace root (e.g. \`path/to/file.ext\`, exactly as shown in the tree below). Do NOT invent, assume, or prepend nonexistent root folders.\n`;
     }
     result.text += `2. **Possessed Files (DO NOT RE-REQUEST)**: You already possess the complete source code for all **${contextFiles.length}** file(s) marked **\`[C]\`** under 'LOADED FILE CONTENTS'. Calling \`<add_files_to_context>\` or \`read_file\` for possessed files is STRICTLY FORBIDDEN and wastes context tokens.\n`;
-    result.text += `3. **Privilege Full Code via Unmute (<unmute_files>)**:
+    if (!isExportContext) {
+        result.text += `3. **Privilege Full Code via Unmute (<unmute_files>)**:
 - Calling \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` directly transitions any file from either **Muted (\`[M]\`)** OR **Structure-Only (\`[D]\`)** to **Full Code (\`[C]\`)**.
 - Always **privilege using unmute (full code)** whenever you are not heavily constrained by token budget. Generating structure from code requires complex AST parsing and takes extra time.
 - If you need to inspect or modify code and context space allows, output \`<unmute_files>\` to load the complete file immediately.\n`;
-    result.text += `4. **Use Structure Mode (<load_structure>) ONLY When Heavily Constrained**:
+        result.text += `4. **Use Structure Mode (<load_structure>) ONLY When Heavily Constrained**:
 - Do NOT default to \`<load_structure>\` unless the context is genuinely bloated or you are tightly constrained by token limits.
 - Structure mode (\`<load_structure path="path/to/file.ext" />\`) provides only signatures and interfaces without implementation bodies. It is strictly for reference when token capacity is scarce. Files in structure mode CANNOT be edited directly.
 - Note: If a file is in structure mode \`[D]\` and you later need its full content or need to modify it, call \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` to upgrade it directly from structure to full code (\`[C]\`).\n`;
-    result.text += `5. **Unpossessed Files (NO PATH HALLUCINATIONS)**: Files with no marker have hidden content. To load them, use \`<add_files_to_context>\` with the EXACT path from the tree. Never guess or hallucinate paths that do not exist in the tree.\n\n`;
+        result.text += `5. **Unpossessed Files (NO PATH HALLUCINATIONS)**: Files with no marker have hidden content. To load them, use \`<add_files_to_context>\` with the EXACT path from the tree. Never guess or hallucinate paths that do not exist in the tree.\n\n`;
 
-    result.text += `### 🔋 CONTEXT BUDGET & MUTING PROTOCOL (READ BEFORE ADDING FILES)\n`;
-    result.text += `The context window is a hard, finite budget shared by every loaded file. When it saturates, the automatic context guard EVICTS the lowest-priority files to stay under the limit — this is why a file or symbol you just requested can appear and then vanish on your next turn. Do NOT fight this loop; cooperate with the budget:\n`;
-    result.text += `1. **Release BEFORE you Acquire**: If the context is near capacity, or a previous \`<add_files_to_context>\` / \`<show_symbol>\` request was silently dropped, FIRST mute the files you no longer need: \`<mute_files>\\npath/to/stale_file.ext\\n</mute_files>
-
-\`. Muted files instantly release their tokens while remaining visible in the tree as \`[M]\`.\n`;
-    result.text += `2. **Then add your target**: Once budget is freed, call \`<add_files_to_context>\` (or \`<show_symbol>\`) for the file you actually need. Files added after sufficient budget is released will NOT be evicted.\n`;
-    result.text += `3. **Never blindly re-add**: If a file you added is missing on the next turn, do NOT loop by re-adding it into a still-full context. Mute one or more stale \`[C]\` files first to free room, THEN re-add the target.\n`;
-    result.text += `4. **Muting is reversible**: Muted files are never deleted. Restore them anytime with \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>
-
-\` to get full content \`[C]\` back. Mute aggressively to protect the budget; unmute precisely when needed.\n\n`;
+        result.text += `### 🔋 CONTEXT BUDGET & MUTING PROTOCOL (READ BEFORE ADDING FILES)\n`;
+        result.text += `The context window is a hard, finite budget shared by every loaded file. When it saturates, the automatic context guard EVICTS the lowest-priority files to stay under the limit — this is why a file or symbol you just requested can appear and then vanish on your next turn. Do NOT fight this loop; cooperate with the budget:\n`;
+        result.text += `1. **Release BEFORE you Acquire**: If the context is near capacity, or a previous \`<add_files_to_context>\` / \`<show_symbol>\` request was silently dropped, FIRST mute the files you no longer need: \`<mute_files>\\npath/to/stale_file.ext\\n</mute_files>\`. Muted files instantly release their tokens while remaining visible in the tree as \`[M]\`.\n`;
+        result.text += `2. **Then add your target**: Once budget is freed, call \`<add_files_to_context>\` (or \`<show_symbol>\`) for the file you actually need. Files added after sufficient budget is released will NOT be evicted.\n`;
+        result.text += `3. **Never blindly re-add**: If a file you added is missing on the next turn, do NOT loop by re-adding it into a still-full context. Mute one or more stale \`[C]\` files first to free room, THEN re-add the target.\n`;
+        result.text += `4. **Muting is reversible**: Muted files are never deleted. Restore them anytime with \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` to get full content \`[C]\` back. Mute aggressively to protect the budget; unmute precisely when needed.\n\n`;
+    } else {
+        result.text += `3. **Unpossessed Files (NO PATH HALLUCINATIONS)**: Files with no marker have hidden content. If you need any missing file from the tree, request it with \`<add_files_to_context>\` using the EXACT path from the tree. Never guess or hallucinate paths that do not exist.\n\n`;
+    }
 
     result.text += `### 🏷️ CONTEXT MARKERS (LEGEND)\n`;
     result.text += `- **\`[C]\` (Full Content Loaded)**: Full source code is ALREADY in memory under 'LOADED FILE CONTENTS'. Ready for editing.\n`;
-    result.text += `- **\`[M]\` (Muted in Context)**: Content is muted (0 tokens, still listed in the tree). Use \`<mute_files>\\npath/to/file.ext\\n</mute_files>\` to deliberately release budget, and \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` to restore full code (\`[C]\`).\n`;
-    result.text += `- **\`[D]\` (Structure / Definitions Only)**: Only signatures/structure are loaded. Calling \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` upgrades this file directly from structure-only to full code (\`[C]\`). Keep structure only when context is too bloated or files are reference-only.\n`;
-    result.text += `- **(No Marker)**: File content is HIDDEN. Use <add_files_to_context> with the exact tree path to load it.\n\n`;
-    
+    if (!isExportContext) {
+        result.text += `- **\`[M]\` (Muted in Context)**: Content is muted (0 tokens, still listed in the tree). Use \`<mute_files>\\npath/to/file.ext\\n</mute_files>\` to deliberately release budget, and \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` to restore full code (\`[C]\`).\n`;
+        result.text += `- **\`[D]\` (Structure / Definitions Only)**: Only signatures/structure are loaded. Calling \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` upgrades this file directly from structure-only to full code (\`[C]\`). Keep structure only when context is too bloated or files are reference-only.\n`;
+    } else {
+        result.text += `- **\`[D]\` (Structure / Definitions Only)**: Only signatures/structure are loaded for reference.\n`;
+    }
+    result.text += `- **(No Marker)**: File content is HIDDEN. Use <add_files_to_context> with the exact tree path to request it.\n\n`;
+
     if (options?.capabilities?.includeGitInfo) {
       let gitInfoText = "### 🐙 GIT ENVIRONMENT\n";
       for (const folder of activeFolders) {

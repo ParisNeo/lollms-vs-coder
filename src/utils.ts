@@ -2520,3 +2520,243 @@ export function extractFileBlocks(text: string): ExtractedFileBlock[] {
 
     return blocks;
 }
+
+/**
+ * Scans text for an explicit completion end tag (</end>, </done>, <end/>, <done/>, <end>, <done>)
+ * outside thinking blocks, <file>/<delete_code>/<execute_code> blocks, fenced code blocks, and inline backticks.
+ * Returns the character offsets of the first valid end tag so streaming can terminate immediately.
+ */
+export function findExplicitEndTag(text: string): { index: number; endIndex: number; tag: string } | null {
+    if (!text || typeof text !== 'string') return null;
+
+    const THINK_TAGS = new Set(['think', 'thinking', 'thought', 'analysis', 'reasoning']);
+    const len = text.length;
+    let lineStart = 0;
+
+    let activeFence: { char: string; len: number } | null = null;
+    let activeThinkTag: string | null = null;
+    let activeOpaqueTag: 'file' | 'delete_code' | 'execute_code' | null = null;
+
+    while (lineStart < len) {
+        let nlIdx = text.indexOf('\n', lineStart);
+        let lineEnd = nlIdx === -1 ? len : nlIdx;
+        if (lineEnd > lineStart && text[lineEnd - 1] === '\r') {
+            lineEnd--;
+        }
+        const nextLineStart = nlIdx === -1 ? len : nlIdx + 1;
+        const lineText = text.slice(lineStart, lineEnd);
+
+        if (activeFence) {
+            const cf = lineText.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+            if (cf && cf[1][0] === activeFence.char && cf[1].length >= activeFence.len && (cf[2] || '').trim() === '') {
+                activeFence = null;
+            }
+            lineStart = nextLineStart;
+            continue;
+        }
+
+        if (!activeThinkTag && !activeOpaqueTag) {
+            const of = lineText.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+            if (of) {
+                const marker = of[1];
+                const ch = marker[0];
+                const trailing = of[2] || '';
+                const isInline = ch === '`' && trailing.includes(marker);
+                if (!isInline) {
+                    activeFence = { char: ch, len: marker.length };
+                    lineStart = nextLineStart;
+                    continue;
+                }
+            }
+        }
+
+        let col = 0;
+        let seenNonWs = false;
+        while (col < lineText.length) {
+            const ch = lineText[col];
+
+            if (!activeThinkTag && !activeOpaqueTag && ch === '`') {
+                const endCol = findMatchingInlineBacktickEnd(lineText, col);
+                if (endCol !== -1) {
+                    col = endCol;
+                    seenNonWs = true;
+                    continue;
+                }
+                col++;
+                seenNonWs = true;
+                continue;
+            }
+
+            if (ch === '<') {
+                const slice = lineText.slice(col);
+
+                if (activeThinkTag) {
+                    const closeThinkM = slice.match(/^<\/\s*(think|thinking|thought|analysis|reasoning)\s*>/i);
+                    if (closeThinkM) {
+                        activeThinkTag = null;
+                        col += closeThinkM[0].length;
+                        seenNonWs = true;
+                        continue;
+                    }
+                    col++;
+                    seenNonWs = true;
+                    continue;
+                }
+
+                if (activeOpaqueTag) {
+                    const closeOpaqueRe = new RegExp(`^<\\/\\s*${activeOpaqueTag}\\s*>`, 'i');
+                    const closeOpaqueM = slice.match(closeOpaqueRe);
+                    if (closeOpaqueM && (!seenNonWs || lineText.slice(col + closeOpaqueM[0].length).trim() === '' || /^<(?:\/?(?:end|done))(?:\s*\/?)>/i.test(lineText.slice(col + closeOpaqueM[0].length).trim()))) {
+                        activeOpaqueTag = null;
+                        col += closeOpaqueM[0].length;
+                        seenNonWs = true;
+                        continue;
+                    }
+                    col++;
+                    seenNonWs = true;
+                    continue;
+                }
+
+                const openThinkM = slice.match(/^<(think|thinking|thought|analysis|reasoning)\b[^>]*>/i);
+                if (openThinkM && !openThinkM[0].trimEnd().endsWith('/>')) {
+                    activeThinkTag = openThinkM[1].toLowerCase();
+                    col += openThinkM[0].length;
+                    seenNonWs = true;
+                    continue;
+                }
+
+                const openFileM = slice.match(/^<file\s+([^>\r\n]*?)>/i);
+                if (openFileM) {
+                    const attrs = parseFileTagAttributes(openFileM[1] || '');
+                    if (attrs && attrs.path && isValidFilePath(attrs.path)) {
+                        if (!openFileM[1].trimEnd().endsWith('/')) {
+                            activeOpaqueTag = 'file';
+                        }
+                        col += openFileM[0].length;
+                        seenNonWs = true;
+                        continue;
+                    }
+                }
+
+                const openOpaqueM = slice.match(/^<(delete_code|execute_code)\b([^>\r\n]*?)>/i);
+                if (openOpaqueM) {
+                    if (!openOpaqueM[2].trimEnd().endsWith('/')) {
+                        activeOpaqueTag = openOpaqueM[1].toLowerCase() as 'delete_code' | 'execute_code';
+                    }
+                    col += openOpaqueM[0].length;
+                    seenNonWs = true;
+                    continue;
+                }
+
+                const endTagM = slice.match(/^<(\/?(?:end|done))(?:\s*\/?)>/i);
+                if (endTagM) {
+                    return {
+                        index: lineStart + col,
+                        endIndex: lineStart + col + endTagM[0].length,
+                        tag: endTagM[0]
+                    };
+                }
+            }
+
+            if (ch !== ' ' && ch !== '\t') {
+                seenNonWs = true;
+            }
+            col++;
+        }
+
+        lineStart = nextLineStart;
+    }
+
+    return null;
+}
+
+/**
+ * Returns true if the text contains an interactive <lollms_form> or <form> block outside protected regions.
+ */
+export function detectInteractiveForm(text: string, isProtected?: (idx: number) => boolean): boolean {
+    if (!text || typeof text !== 'string') return false;
+    const check = (re: RegExp): boolean => {
+        re.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(text)) !== null) {
+            if (!isProtected || !isProtected(m.index)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    return check(/<lollms_form\b[^>]*>[\s\S]*?<\/lollms_form>/gi) ||
+        check(/(?:^[ \t]*|(?<=>)[ \t]*)<form\b[^>]*>[\s\S]*?<\/form>/gim);
+}
+
+/**
+ * Detects whether the model's turn demands user interaction (via form, <user_instruction>,
+ * <delete_files>, user-input tool calls, or natural-language questions/requests when no tool calls remain).
+ */
+export function detectUserInteractionDemand(
+    text: string,
+    options?: {
+        isProtected?: (idx: number) => boolean;
+        hasPendingTools?: boolean;
+        allowDeleteFiles?: boolean;
+        discoveredActions?: Array<{ tag: string; params: string; attrStr?: string }>;
+    }
+): { demanded: boolean; reason?: string } {
+    if (!text || typeof text !== 'string') return { demanded: false };
+    const isProtected = options?.isProtected;
+
+    if (detectInteractiveForm(text, isProtected)) {
+        return { demanded: true, reason: 'form' };
+    }
+
+    const userInstrRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<user_instruction\b[^>]*>/gim;
+    let uiMatch: RegExpExecArray | null;
+    while ((uiMatch = userInstrRegex.exec(text)) !== null) {
+        if (!isProtected || !isProtected(uiMatch.index)) {
+            return { demanded: true, reason: 'user_instruction' };
+        }
+    }
+
+    if (options?.allowDeleteFiles !== false) {
+        const delRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<(?:delete_files|delete_file)\b/gim;
+        let delMatch: RegExpExecArray | null;
+        while ((delMatch = delRegex.exec(text)) !== null) {
+            if (!isProtected || !isProtected(delMatch.index)) {
+                return { demanded: true, reason: 'delete_files' };
+            }
+        }
+    }
+
+    if (Array.isArray(options?.discoveredActions)) {
+        for (const act of options.discoveredActions) {
+            if (act.tag === 'lollms_tool') {
+                const combined = `${act.attrStr || ''} ${act.params || ''}`;
+                if (/\b(?:request_user_input|delegate_to_user)\b/i.test(combined)) {
+                    return { demanded: true, reason: 'user_input_tool' };
+                }
+            }
+        }
+    }
+
+    if (!options?.hasPendingTools) {
+        const prose = stripThinkingTags(text)
+            .replace(/<file\b[^>]*>[\s\S]*?(?:<\/file>|$)/gi, '')
+            .replace(/<execute_code\b[^>]*>[\s\S]*?(?:<\/execute_code>|$)/gi, '')
+            .replace(/<plan\b[^>]*>[\s\S]*?<\/plan>/gi, '')
+            .replace(/```[\s\S]*?(?:```|$)/g, '')
+            .replace(/~~~[\s\S]*?(?:~~~|$)/g, '')
+            .replace(/`[^`\r\n]+`/g, '')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        if (prose.length > 0) {
+            const explicitUserPromptRe = /\b(?:please\s+(?:confirm|clarify|provide|share|paste|specify|choose|select|pick|tell\s+me|let\s+me\s+know|run|execute|test|verify|check|inspect|review|apply|approve|answer|reply|respond)|let\s+me\s+know\s+(?:if|which|what|whether|how|when|once)|could\s+you\s+(?:please\s+)?(?:confirm|clarify|provide|share|paste|specify|choose|run|test|verify|check|tell\s+me)|can\s+you\s+(?:please\s+)?(?:confirm|clarify|provide|share|paste|specify|choose|run|test|verify|check|tell\s+me)|would\s+you\s+like\s+(?:me\s+to|to)|do\s+you\s+want\s+(?:me\s+to|to)|shall\s+i\b|should\s+i\b|waiting\s+for\s+your\s+(?:input|response|confirmation|feedback|reply|answer|decision)|once\s+you(?:'ve|\s+have)?\s+(?:run|tested|verified|confirmed|provided|replied)|your\s+(?:turn|input|decision|confirmation|feedback)\s+is\s+(?:needed|required))\b/i;
+            if (explicitUserPromptRe.test(prose) || prose.endsWith('?')) {
+                return { demanded: true, reason: 'prose_user_interaction' };
+            }
+        }
+    }
+
+    return { demanded: false };
+}

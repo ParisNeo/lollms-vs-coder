@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
 import { AgentSecurityGuard } from '../../security/agentSecurityGuard';
+import { CodeLossReviewPanel } from '../../panels/codeLossReviewPanel';
 
 export const updateFunctionTool: ToolDefinition = {
     name: "update_function",
@@ -222,17 +223,31 @@ export const updateFunctionTool: ToolDefinition = {
         const fullAfterText = text.substring(0, doc.offsetAt(effectiveRange.start)) + adjustedContent + text.substring(doc.offsetAt(effectiveRange.end));
         const validation = AgentSecurityGuard.validateWriteContent(filePath, text, fullAfterText, secLevel, false);
         if (!validation.valid) {
-            if (validation.requiresConfirmation && env.agentManager?.requestSecurityApproval) {
-                const approval = await env.agentManager.requestSecurityApproval(
-                    `Confirm Symbol Update: ${filePath}`,
-                    validation.reason || 'Significant code reduction detected.',
-                    'update_function',
+            if (validation.requiresConfirmation) {
+                const reviewDecision = await CodeLossReviewPanel.confirm({
                     filePath,
+                    title: `Confirm Symbol Update: ${path.basename(filePath)}`,
+                    reason: validation.reason || 'Significant code reduction detected.',
+                    originalContent: text,
+                    proposedContent: fullAfterText,
+                    allowAskAi: false,
                     signal
-                );
-                if (approval === 'block') {
-                    return { success: false, output: `🛑 SECURITY BLOCK: ${validation.reason}` };
+                });
+                if (reviewDecision !== 'accept') {
+                    env.agentManager?.securityGuard?.recordAudit?.({
+                        verdict: 'blocked',
+                        tool: 'update_function',
+                        target: filePath,
+                        reason: validation.reason || 'User rejected symbol update after reviewing diff.'
+                    });
+                    return { success: false, output: `🛑 SECURITY BLOCK: User rejected symbol update after diff review (${validation.reason}).` };
                 }
+                env.agentManager?.securityGuard?.recordAudit?.({
+                    verdict: 'confirmed',
+                    tool: 'update_function',
+                    target: filePath,
+                    reason: `${validation.reason || 'Symbol update shrink'} (accepted after diff review)`
+                });
             } else {
                 return { success: false, output: `🛑 SECURITY BLOCK: ${validation.reason}` };
             }

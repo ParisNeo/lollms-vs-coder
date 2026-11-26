@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
 import { stripThinkingTags } from '../../utils';
 import { AgentSecurityGuard } from '../../security/agentSecurityGuard';
+import { CodeLossReviewPanel } from '../../panels/codeLossReviewPanel';
 import { ChatMessage } from '../../lollmsAPI';
 import * as path from 'path';
 
@@ -149,17 +150,31 @@ ${params.instructions}
         const secLevel = env.agentManager?.getSecurityLevel?.() || 'guarded';
         const validation = AgentSecurityGuard.validateWriteContent(params.file_path, originalContent, finalCode, secLevel, true);
         if (!validation.valid) {
-            if (validation.requiresConfirmation && env.agentManager?.requestSecurityApproval) {
-                const approval = await env.agentManager.requestSecurityApproval(
-                    `Confirm Risky Overwrite: ${params.file_path}`,
-                    validation.reason || 'Potential code loss or placeholder detected.',
-                    'generate_code',
-                    params.file_path,
+            if (validation.requiresConfirmation) {
+                const reviewDecision = await CodeLossReviewPanel.confirm({
+                    filePath: params.file_path,
+                    title: `Confirm Risky Overwrite: ${path.basename(params.file_path)}`,
+                    reason: validation.reason || 'Potential code loss or placeholder detected.',
+                    originalContent: originalContent ?? '',
+                    proposedContent: finalCode,
+                    allowAskAi: false,
                     signal
-                );
-                if (approval === 'block') {
-                    return { success: false, output: `🛑 SECURITY BLOCK: ${validation.reason}` };
+                });
+                if (reviewDecision !== 'accept') {
+                    env.agentManager?.securityGuard?.recordAudit?.({
+                        verdict: 'blocked',
+                        tool: 'generate_code',
+                        target: params.file_path,
+                        reason: validation.reason || 'User rejected risky overwrite after reviewing diff.'
+                    });
+                    return { success: false, output: `🛑 SECURITY BLOCK: User rejected overwrite after diff review (${validation.reason}).` };
                 }
+                env.agentManager?.securityGuard?.recordAudit?.({
+                    verdict: 'confirmed',
+                    tool: 'generate_code',
+                    target: params.file_path,
+                    reason: `${validation.reason || 'Risky overwrite'} (accepted after diff review)`
+                });
             } else {
                 return { success: false, output: `🛑 SECURITY BLOCK: ${validation.reason}` };
             }

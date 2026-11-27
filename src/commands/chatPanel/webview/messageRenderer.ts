@@ -2740,7 +2740,17 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     }
 
     // 1. RETAIN IN-PLACE SEQUENTIAL CONTENT (Thoughts are parsed in-place as chronological segments)
-    let mainProcessedContent = normalizePseudoFileBlocks(sourceText);
+    let mainProcessedContent = normalizePseudoFileBlocks(sourceText)
+        .replace(
+            /<execute_command\b[^>]*>[\s\r\n]*(?:<command\b[^>]*>([\s\S]*?)<\/command>|([\s\S]*?))[\s\r\n]*<\/execute_command>/gi,
+            (_m, cmd1, cmd2) => `<execute_code lang="bash">\n${(cmd1 ?? cmd2 ?? '').trim()}\n</execute_code>
+
+`
+        )
+        .replace(
+            /<tool_use_error\b[^>]*>([\s\S]*?)<\/tool_use_error>/gi,
+            (_m, errBody) => `\n\n<div class="tool-use-error-card" style="margin: 8px 0; padding: 10px 14px; border: 1.5px solid var(--vscode-charts-red); border-radius: 6px; background: rgba(231, 76, 60, 0.1); color: var(--vscode-foreground);"><div style="font-weight: 700; font-size: 11.5px; color: var(--vscode-charts-red); display: flex; align-items: center; gap: 6px; margin-bottom: 4px;"><i class="codicon codicon-error"></i> Tool Call Error</div><div style="font-size: 11px; font-family: var(--vscode-editor-font-family); white-space: pre-wrap;">${escapeHtml((errBody || '').trim())}</div></div>\n\n`
+        );
     mainProcessedContent = mainProcessedContent.replace(
         /(<\/(?:add_files_to_context|remove_files_from_context|unpack_directory|peek_files|file|project_memory|skill|load_structure|read_definitions|show_symbol|execute_code|lollms_tool|lollms_form|mute_files|unmute_files|manage_symbols|query_architecture|sparql|run_tests|read_external_file|grep|user_instruction|mission_briefing|delete_files|details)>)([^\r\n\s<])/gi,
         '$1\n\n$2'
@@ -4614,16 +4624,14 @@ export class ContextPresenter {
     }
 
     public static renderFileList(
-        list: (string | { path: string, bytes?: number, tokens?: number, state?: string, mtime?: number })[], 
+        list: (string | { path: string, bytes?: number, tokens?: number, state?: string, mtime?: number, isUnloaded?: boolean })[], 
         emptyMsg: string, 
         allowSummarize: boolean = false,
         fileTokensMap: Record<string, number> = {},
         sortOrder: 'heavy-to-light' | 'light-to-heavy' | 'name' | 'modified' | 'tree' | 'visible-first' | 'muted-first' = 'heavy-to-light',
         mutedFiles: string[] = [],
-        options?: { isInlineBulkMode?: boolean }
+        options?: { isInlineBulkMode?: boolean; workspaceFiles?: string[]; showUnloaded?: boolean; filterQuery?: string }
     ): string {
-        if (!list || list.length === 0) return `<div class="empty-context-msg">${emptyMsg}</div>`;
-
         const registry = (window as any).lazyFilesRegistry;
         const mtimeMap = (state as any).fileMtimeMap || {};
 
@@ -4631,11 +4639,14 @@ export class ContextPresenter {
             return mutedFiles.some((m: string) => areFilesMatching(m, p));
         };
 
-        // Normalize list items to objects with byte sizes, mtime, and approximate token conversions
-        const normalized = list.map(item => {
-            const rawPath = (typeof item === 'string' ? item : (item?.path || '')).replace(/\\/g, '/');
+        // Normalize and deduplicate list items to objects with byte sizes, mtime, and approximate token conversions
+        const normalizedMap = new Map<string, { path: string; fileName: string; dirName: string; bytes: number; tokens: number; mtime: number; state: any; isMuted: boolean; isUnloaded: boolean }>();
+        for (const item of (list || [])) {
+            const rawPath = (typeof item === 'string' ? item : (item?.path || '')).replace(/\\/g, '/').trim();
+            if (!rawPath) continue;
             const regItem = registry?.get(rawPath);
-            const isMuted = isPathMuted(rawPath);
+            const isUnloaded = typeof item === 'object' && item !== null ? !!item.isUnloaded : false;
+            const isMuted = !isUnloaded && isPathMuted(rawPath);
 
             let bytes = 0;
             let tokens = 0;
@@ -4672,16 +4683,66 @@ export class ContextPresenter {
 
             const fileName = rawPath.split('/').pop() || rawPath;
             const dirName = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
+            const dedupeKey = rawPath.replace(/^\.?\/+/, '').toLowerCase();
 
-            return { path: rawPath, fileName, dirName, bytes, tokens, mtime, state: fileState, isMuted };
-        });
+            const existing = normalizedMap.get(dedupeKey);
+            if (existing) {
+                existing.bytes = Math.max(existing.bytes, bytes);
+                existing.tokens = Math.max(existing.tokens, tokens);
+                existing.mtime = Math.max(existing.mtime, mtime);
+                existing.isMuted = existing.isMuted || isMuted;
+                existing.isUnloaded = existing.isUnloaded && isUnloaded;
+                if (fileState) existing.state = fileState;
+            } else {
+                normalizedMap.set(dedupeKey, { path: rawPath, fileName, dirName, bytes, tokens, mtime, state: fileState, isMuted, isUnloaded });
+            }
+        }
+
+        // Efficiently inject unloaded workspace files when toggled ON or when user is actively searching
+        const filterQ = (options?.filterQuery || '').trim();
+        const includeUnloaded = !!options?.showUnloaded || filterQ.length > 0;
+        let truncatedUnloadedCount = 0;
+        if (includeUnloaded && Array.isArray(options?.workspaceFiles) && options!.workspaceFiles.length > 0) {
+            const MAX_UNLOADED_RENDER = filterQ.length > 0 ? 100 : 150;
+            const matcher = filterQ.length > 0 ? createFilePatternMatcher(filterQ) : null;
+            let addedUnloaded = 0;
+            for (const wp of options!.workspaceFiles) {
+                const rawPath = String(wp || '').replace(/\\/g, '/').trim();
+                if (!rawPath) continue;
+                const dedupeKey = rawPath.replace(/^\.?\/+/, '').toLowerCase();
+                if (normalizedMap.has(dedupeKey)) continue;
+                const fileName = rawPath.split('/').pop() || rawPath;
+                if (matcher && !matcher(rawPath, fileName)) continue;
+                if (addedUnloaded >= MAX_UNLOADED_RENDER) {
+                    truncatedUnloadedCount++;
+                    continue;
+                }
+                const dirName = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
+                normalizedMap.set(dedupeKey, {
+                    path: rawPath,
+                    fileName,
+                    dirName,
+                    bytes: 0,
+                    tokens: 0,
+                    mtime: 0,
+                    state: 'unloaded',
+                    isMuted: false,
+                    isUnloaded: true
+                });
+                addedUnloaded++;
+            }
+        }
+
+        const normalized = Array.from(normalizedMap.values());
+        if (normalized.length === 0) return `<div class="empty-context-msg">${emptyMsg}</div>`;
 
         const showCheckbox = options?.isInlineBulkMode !== undefined ? options.isInlineBulkMode : !!(state as any).isInlineBulkMode;
 
         const renderFileItemRow = (item: typeof normalized[0], isTree: boolean = false): string => {
             const f = item.path;
+            const isUnloaded = item.isUnloaded;
             const isMuted = item.isMuted;
-            const isDefOnly = item.state === 'definitions-only' || item.state === 'structure' || item.state === 'definitions';
+            const isDefOnly = !isUnloaded && (item.state === 'definitions-only' || item.state === 'structure' || item.state === 'definitions');
             const bytes = item.bytes || 0;
             const tokens = item.tokens || (bytes > 0 ? Math.ceil(bytes / 3.5) : 0);
             const mtime = item.mtime || 0;
@@ -4697,40 +4758,40 @@ export class ContextPresenter {
 
             const displayTok = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
             const weightClass = isMuted ? 'weight-muted' : (isDefOnly ? 'weight-medium' : (bytes >= 35000 ? 'weight-heavy' : (bytes >= 10000 ? 'weight-medium' : 'weight-light')));
-            const tokenBadge = isMuted
+            const tokenBadge = isUnloaded
+                ? `<span class="file-token-badge weight-muted" style="opacity: 0.7; border-style: dashed;" title="Not loaded in context">[UNLOADED]</span>`
+                : (isMuted
                 ? `<span class="file-token-badge weight-muted clickable-unmute-pill" data-path="${f}" title="Click to unmute and activate full content [C]">${formattedBytes} [MUTED]</span>`
                 : (isDefOnly
                     ? `<span class="file-token-badge weight-medium clickable-unmute-pill" data-path="${f}" style="border-color: var(--vscode-charts-blue); color: var(--vscode-charts-blue);" title="Click to upgrade to full code [C]">[STRUCTURE] ${formattedBytes} (~${displayTok} tok)</span>`
-                    : `<span class="file-token-badge ${weightClass}" title="Size: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens)">${formattedBytes} (~${displayTok} tok)</span>`);
+                    : `<span class="file-token-badge ${weightClass}" title="Size: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens)">${formattedBytes} (~${displayTok} tok)</span>`));
 
             const timeStr = formatTimeAgo(mtime);
             const timeBadge = (mtime > 0 && timeStr)
                 ? `<span class="file-token-badge file-mtime-badge" style="opacity: 0.75; font-size: 9px;" title="Last Modified: ${new Date(mtime).toLocaleString()}"><i class="codicon codicon-history" style="font-size:9px;"></i> ${timeStr}</span>`
                 : '';
 
-            const muteIcon = isMuted ? 'codicon-eye-closed' : 'codicon-eye';
-            const muteClass = isMuted ? 'is-muted' : 'is-active';
-            const muteTitle = isMuted 
-                ? 'Reactivate file content for this discussion (Unmute)' 
-                : 'Deactivate file content for this discussion (Mute / Manual Governor)';
-
-            const defTitle = isDefOnly
-                ? 'Currently in Structure Only mode (Click to load full content)'
-                : 'Half-Mute: Include Structure / Definitions Only (save tokens)';
+            const currentFileState = isUnloaded ? 'unloaded' : (isMuted ? 'muted' : (isDefOnly ? 'definitions-only' : 'included'));
+            const stateColor = currentFileState === 'included'
+                ? 'var(--vscode-charts-green)'
+                : (currentFileState === 'definitions-only'
+                    ? 'var(--vscode-charts-blue)'
+                    : (currentFileState === 'muted' ? 'var(--vscode-charts-orange)' : 'var(--vscode-descriptionForeground)'));
 
             return `
-            <li class="context-item ${isMuted ? 'file-muted' : ''} ${isDefOnly ? 'file-def-only' : ''}" style="flex-direction: column; align-items: stretch; gap: 4px;" data-path="${f}" title="${f}">
+            <li class="context-item ${isMuted ? 'file-muted' : ''} ${isDefOnly ? 'file-def-only' : ''} ${isUnloaded ? 'file-unloaded' : ''}" style="flex-direction: column; align-items: stretch; gap: 4px; ${isUnloaded ? 'opacity: 0.72;' : ''}" data-path="${f}" data-unloaded="${isUnloaded ? 'true' : 'false'}" title="${f}">
                 <div style="display:flex; align-items:center; width:100%; gap: 4px;" title="${f}">
                     ${showCheckbox ? `<input type="checkbox" class="inline-file-check" data-path="${f}" style="margin: 0 4px 0 0; cursor: pointer; flex-shrink: 0;" title="Select ${fileName} for bulk action">` : ''}
-                    <button class="toggle-mute-file-btn ${muteClass}" data-path="${f}" title="${muteTitle}">
-                        <span class="codicon ${muteIcon}"></span>
-                    </button>
-                    <button class="toggle-structure-file-btn ${isDefOnly ? 'is-active' : ''}" data-path="${f}" data-state="${isDefOnly ? 'included' : 'definitions-only'}" title="${defTitle}" style="background: transparent; border: none; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; justify-content: center; color: ${isDefOnly ? 'var(--vscode-charts-blue)' : 'var(--vscode-foreground)'}; opacity: ${isDefOnly ? '1' : '0.6'}; transition: all 0.15s ease; flex-shrink: 0;">
-                        <span class="codicon codicon-symbol-class"></span>
-                    </button>
-                    <button class="edit-file-structure-btn" data-path="${f}" title="Structure Selection Studio: Select which symbols to keep vs compact" style="background: transparent; border: none; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; justify-content: center; color: var(--vscode-foreground); opacity: 0.65; transition: all 0.15s ease; flex-shrink: 0;">
+                    <select class="file-state-select" data-path="${f}" title="Change file context state" style="height: 20px; font-size: 10px; padding: 0 4px; background: var(--vscode-dropdown-background); color: ${stateColor}; border: 1px solid var(--vscode-dropdown-border); border-radius: 3px; cursor: pointer; flex-shrink: 0; font-weight: 600;">
+                        <option value="included" ${currentFileState === 'included' ? 'selected' : ''}>👁️ Full [C]</option>
+                        <option value="definitions-only" ${currentFileState === 'definitions-only' ? 'selected' : ''}>🧩 Structure [D]</option>
+                        <option value="muted" ${currentFileState === 'muted' ? 'selected' : ''}>🙈 Muted [M]</option>
+                        <option value="unloaded" ${currentFileState === 'unloaded' ? 'selected' : ''}>⬜ Unloaded</option>
+                    </select>
+                    ${currentFileState === 'definitions-only' ? `
+                    <button class="edit-file-structure-btn" data-path="${f}" title="Structure Selection Studio: Select which symbols to expand vs collapse" style="background: transparent; border: none; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; justify-content: center; color: var(--vscode-foreground); opacity: 0.65; transition: all 0.15s ease; flex-shrink: 0;">
                         <span class="codicon codicon-list-filter"></span>
-                    </button>
+                    </button>` : ''}
                     <div class="file-row-main" data-path="${f}" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; cursor: pointer;" title="${f}">
                         <span class="codicon ${!isProjectFile(f) ? 'codicon-link' : 'codicon-file'}" style="flex-shrink: 0; ${!isProjectFile(f) ? 'color: var(--vscode-charts-teal, #00b4d8);' : ''}"></span>
                         <span class="path-text file-open-link" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-weight: 600; font-size: 11px;" title="${f}">${fileName}</span>
@@ -4740,16 +4801,17 @@ export class ContextPresenter {
                         ${tokenBadge}
                     </div>
                     <div style="display:flex; gap:2px; flex-shrink:0;">
-                        ${allowSummarize ? `
+                        ${allowSummarize && !isUnloaded ? `
                         <button class="summarize-context-btn" data-value="${f}" title="Synthesize / Clean / Summarize">
                             <span class="codicon codicon-wand"></span>
                         </button>` : ''}
                         <button class="open-context-btn" data-value="${f}" title="Open File in New Editor Tab">
                             <span class="codicon codicon-edit"></span>
                         </button>
-                        <button class="remove-context-btn" data-type="file" data-value="${f}" title="Remove from context across all discussions">
+                        ${!isUnloaded ? `
+                        <button class="remove-context-btn" data-type="file" data-value="${f}" title="Unload / Remove from context">
                             <span class="codicon codicon-close"></span>
-                        </button>
+                        </button>` : ''}
                     </div>
                 </div>
             </li>`;
@@ -4810,29 +4872,41 @@ export class ContextPresenter {
                     };
                     const allSubFiles = getAllSubFiles(sub);
                     const mutedSubCount = allSubFiles.filter(f => f.isMuted).length;
-                    const visibleSubCount = allSubFiles.length - mutedSubCount;
+                    const unloadedSubCount = allSubFiles.filter(f => f.isUnloaded).length;
+                    const defOnlySubCount = allSubFiles.filter(f => !f.isUnloaded && !f.isMuted && (f.state === 'definitions-only' || f.state === 'structure' || f.state === 'definitions')).length;
+                    const fullSubCount = allSubFiles.length - mutedSubCount - unloadedSubCount - defOnlySubCount;
+
                     const isAllMuted = allSubFiles.length > 0 && mutedSubCount === allSubFiles.length;
                     const isSomeMuted = mutedSubCount > 0 && !isAllMuted;
 
-                    const folderMuteClass = isAllMuted ? 'is-muted' : (isSomeMuted ? 'is-partially-muted' : 'is-active');
-                    const folderMuteIcon = isAllMuted ? 'codicon-eye-closed' : 'codicon-eye';
-                    const folderMuteTitle = isAllMuted 
-                        ? `All ${allSubFiles.length} file(s) muted in "${sub.name}" (Click to reveal all)`
-                        : (isSomeMuted 
-                            ? `${visibleSubCount} of ${allSubFiles.length} files visible (${mutedSubCount} muted) in "${sub.name}". Click to reveal all.`
-                            : `All ${allSubFiles.length} file(s) visible in "${sub.name}" (Click to mute all)`);
+                    let folderState: 'included' | 'definitions-only' | 'muted' | 'unloaded' | 'mixed' = 'mixed';
+                    if (allSubFiles.length > 0) {
+                        if (fullSubCount === allSubFiles.length) folderState = 'included';
+                        else if (defOnlySubCount === allSubFiles.length) folderState = 'definitions-only';
+                        else if (mutedSubCount === allSubFiles.length) folderState = 'muted';
+                        else if (unloadedSubCount === allSubFiles.length) folderState = 'unloaded';
+                    }
+
+                    const folderStateColor = folderState === 'included'
+                        ? 'var(--vscode-charts-green)'
+                        : (folderState === 'definitions-only'
+                            ? 'var(--vscode-charts-blue)'
+                            : (folderState === 'muted' ? 'var(--vscode-charts-orange)' : 'var(--vscode-descriptionForeground)'));
 
                     const encodedSubPaths = encodeURIComponent(JSON.stringify(allSubFiles.map(f => f.path)));
                     const hasSubfolders = sub.subDirs.size > 0;
-                    const folderAction = isAllMuted || isSomeMuted ? 'unmute' : 'mute';
 
                     html += `
                     <details class="context-tree-folder ${isAllMuted ? 'folder-muted' : (isSomeMuted ? 'folder-partially-muted' : '')}" open style="margin-bottom: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; background: rgba(0,0,0,0.06);" data-folder="${sub.fullPath}">
                         <summary style="padding: 3px 6px; cursor: pointer; font-size: 11px; font-weight: 700; display: flex; align-items: center; gap: 6px; user-select: none; background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 3px;">
                             ${showCheckbox ? `<input type="checkbox" class="inline-folder-check" data-paths="${encodedSubPaths}" style="cursor: pointer; margin: 0 2px 0 0;" title="Select/Deselect all files in ${sub.name}">` : ''}
-                            <button class="toggle-mute-folder-btn ${folderMuteClass}" data-folder="${sub.fullPath}" data-paths="${encodedSubPaths}" data-action="${folderAction}" title="${folderMuteTitle}" style="background: transparent; border: none; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; justify-content: center;">
-                                <span class="codicon ${folderMuteIcon}"></span>
-                            </button>
+                            <select class="folder-state-select" data-folder="${sub.fullPath}" data-paths="${encodedSubPaths}" title="Change context state for all ${allSubFiles.length} file(s) in ${sub.name}" style="height: 20px; font-size: 10px; padding: 0 4px; background: var(--vscode-dropdown-background); color: ${folderStateColor}; border: 1px solid var(--vscode-dropdown-border); border-radius: 3px; cursor: pointer; flex-shrink: 0; font-weight: 600;">
+                                ${folderState === 'mixed' ? `<option value="mixed" selected disabled>🔀 Mixed</option>` : ''}
+                                <option value="included" ${folderState === 'included' ? 'selected' : ''}>👁️ Full [C]</option>
+                                <option value="definitions-only" ${folderState === 'definitions-only' ? 'selected' : ''}>🧩 Structure [D]</option>
+                                <option value="muted" ${folderState === 'muted' ? 'selected' : ''}>🙈 Muted [M]</option>
+                                <option value="unloaded" ${folderState === 'unloaded' ? 'selected' : ''}>⬜ Unloaded</option>
+                            </select>
                             ${hasSubfolders ? `
                             <button type="button" class="collapse-folder-children-btn" data-folder="${sub.fullPath}" title="Collapse/Expand child folders in ${sub.name}" style="background: transparent; border: none; color: var(--vscode-icon-foreground); padding: 1px 3px; border-radius: 3px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; opacity: 0.75; flex-shrink: 0;">
                                 <span class="codicon codicon-collapse-all" style="font-size: 12px;"></span>
@@ -4873,13 +4947,30 @@ export class ContextPresenter {
         } else if (sortOrder === 'name') {
             normalized.sort((a, b) => a.fileName.localeCompare(b.fileName));
         } else if (sortOrder === 'visible-first') {
-            normalized.sort((a, b) => (Number(a.isMuted) - Number(b.isMuted)) || (b.bytes - a.bytes) || a.fileName.localeCompare(b.fileName));
+            const rank = (it: typeof normalized[0]) => {
+                if (it.isUnloaded) return 3;
+                if (it.isMuted) return 2;
+                if (it.state === 'definitions-only' || it.state === 'structure' || it.state === 'definitions') return 1;
+                return 0;
+            };
+            normalized.sort((a, b) => (rank(a) - rank(b)) || (b.bytes - a.bytes) || a.fileName.localeCompare(b.fileName));
         } else if (sortOrder === 'muted-first') {
-            normalized.sort((a, b) => (Number(b.isMuted) - Number(a.isMuted)) || (b.bytes - a.bytes) || a.fileName.localeCompare(b.fileName));
+            const rank = (it: typeof normalized[0]) => {
+                if (it.isUnloaded) return 3;
+                if (it.isMuted) return 0;
+                if (it.state === 'definitions-only' || it.state === 'structure' || it.state === 'definitions') return 1;
+                return 2;
+            };
+            normalized.sort((a, b) => (rank(a) - rank(b)) || (b.bytes - a.bytes) || a.fileName.localeCompare(b.fileName));
         }
+
+        const truncatedNotice = truncatedUnloadedCount > 0
+            ? `<li class="context-item" style="justify-content:center; opacity:0.65; font-size:10px; font-style:italic; padding:6px;">+ ${truncatedUnloadedCount} more unloaded files — type in the filter box above to narrow results</li>`
+            : '';
 
         return `<ul class="context-file-list">
             ${normalized.map(item => renderFileItemRow(item, false)).join('')}
+            ${truncatedNotice}
         </ul>`;
     }
 
@@ -4923,6 +5014,8 @@ export class ContextPresenter {
         isInlineBulkMode: boolean;
         filterQuery: string;
         showLibrarianBtn: boolean;
+        showUnloaded?: boolean;
+        unloadedCount?: number;
     }): string {
         const isHud = opts.idPrefix === 'hud';
         const presetId = isHud ? 'hud-visibility-preset-select' : 'wizard-visibility-preset-select';
@@ -4939,6 +5032,7 @@ export class ContextPresenter {
         const bulkRemoveId = isHud ? 'inline-bulk-remove-btn' : 'wizard-inline-bulk-remove-btn';
         const searchInpId = isHud ? 'hud-files-search-input' : 'wizard-files-search-input';
         const searchClearId = isHud ? 'hud-files-search-clear' : 'wizard-files-search-clear';
+        const toggleUnloadedId = isHud ? 'hud-toggle-unloaded-btn' : 'wizard-toggle-unloaded-btn';
         const listClass = isHud ? 'hud-project-files-list' : 'wizard-project-files-list';
         const sortOrder = opts.sortOrder || 'heavy-to-light';
         const sortIconClass = sortOrder === 'tree' ? 'codicon-folder-opened'
@@ -4967,7 +5061,8 @@ export class ContextPresenter {
                         <button type="button" id="${sortBtnId}" class="section-bulk-btn fp-sort-cycle-btn" title="Cycle Organization Mode" style="padding: 2px 5px;">
                             <span class="codicon ${sortIconClass}"></span>
                         </button>
-                        ${opts.filesCount > 0 ? `<button type="button" id="${toggleBulkId}" class="section-bulk-btn fp-toggle-bulk-btn ${opts.isInlineBulkMode ? 'active' : ''}" style="${opts.isInlineBulkMode ? 'background: var(--vscode-button-background); color: var(--vscode-button-foreground); font-weight: bold;' : ''}" title="Toggle bulk selection checkboxes in file list"><span class="codicon codicon-checklist"></span> Select</button>` : ''}
+                        <button type="button" id="${toggleUnloadedId}" class="section-bulk-btn fp-toggle-unloaded-btn ${opts.showUnloaded ? 'active' : ''}" style="${opts.showUnloaded ? 'background: var(--vscode-button-background); color: var(--vscode-button-foreground); font-weight: bold;' : ''}" title="Show unloaded workspace files (or type in filter to search all workspace files)"><span class="codicon codicon-files"></span> Unloaded${typeof opts.unloadedCount === 'number' ? ` (${opts.unloadedCount})` : ''}</button>
+                        ${(opts.filesCount > 0 || opts.showUnloaded || opts.filterQuery) ? `<button type="button" id="${toggleBulkId}" class="section-bulk-btn fp-toggle-bulk-btn ${opts.isInlineBulkMode ? 'active' : ''}" style="${opts.isInlineBulkMode ? 'background: var(--vscode-button-background); color: var(--vscode-button-foreground); font-weight: bold;' : ''}" title="Toggle bulk selection checkboxes in file list"><span class="codicon codicon-checklist"></span> Select</button>` : ''}
                     </div>
                 </div>
                 ${opts.isInlineBulkMode ? `
@@ -4978,10 +5073,13 @@ export class ContextPresenter {
                         <span id="${bulkCountId}" class="fp-bulk-count" style="font-size: 9.5px; opacity: 0.7;">(0 selected)</span>
                     </div>
                     <div style="display: flex; align-items: center; gap: 4px;">
-                        <button type="button" id="${bulkMuteId}" class="code-action-btn secondary-btn fp-bulk-mute-btn" style="height: 20px; font-size: 9.5px; padding: 0 6px;" title="Mute selected files (reduce content tokens to 0)"><i class="codicon codicon-eye-closed"></i> Mute</button>
-                        <button type="button" id="${bulkUnmuteId}" class="code-action-btn secondary-btn fp-bulk-unmute-btn" style="height: 20px; font-size: 9.5px; padding: 0 6px;" title="Reveal / Unmute selected files (full content)"><i class="codicon codicon-eye"></i> Unmute</button>
-                        <button type="button" id="${bulkStructId}" class="code-action-btn secondary-btn fp-bulk-structure-btn" style="height: 20px; font-size: 9.5px; padding: 0 6px; color: var(--vscode-charts-blue); border-color: rgba(0, 122, 204, 0.4);" title="Half-mute selected: Structure / Definitions only (save tokens)"><i class="codicon codicon-symbol-class"></i> Structure</button>
-                        <button type="button" id="${bulkRemoveId}" class="code-action-btn delete-btn fp-bulk-remove-btn" style="height: 20px; font-size: 9.5px; padding: 0 6px;" title="Remove selected files from context"><i class="codicon codicon-trash"></i> Remove</button>
+                        <select class="fp-bulk-state-select" style="height: 20px; font-size: 10px; padding: 0 4px; background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 3px; cursor: pointer;" title="Target state for selected files">
+                            <option value="included">👁️ Full [C]</option>
+                            <option value="definitions-only">🧩 Structure [D]</option>
+                            <option value="muted">🙈 Muted [M]</option>
+                            <option value="unloaded">⬜ Unloaded</option>
+                        </select>
+                        <button type="button" class="code-action-btn apply-btn fp-bulk-apply-state-btn" style="height: 20px; font-size: 9.5px; padding: 0 8px;" title="Apply selected state to all checked files">Apply</button>
                     </div>
                 </div>` : ''}
                 <div class="hud-files-search-bar" style="display: flex; align-items: center; gap: 6px; margin: 0 0 8px 0; padding: 2px 8px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px;" title="Supports substrings, wildcards (*, **, ?, {a,b}), exclusions (!pattern or -pattern), OR (| or ,), and /regex/">
@@ -5271,7 +5369,9 @@ export class ContextPresenter {
                                 sortOrder: state.fileSortOrder || 'heavy-to-light',
                                 isInlineBulkMode: !!(state as any).isInlineBulkMode,
                                 filterQuery: (state as any).hudFileFilterQuery || '',
-                                showLibrarianBtn: !isAgentActive && finalProjectFilesCount > 0
+                                showLibrarianBtn: !isAgentActive && finalProjectFilesCount > 0,
+                                showUnloaded: !!state.showUnloadedFiles,
+                                unloadedCount: Array.isArray(state.workspaceFiles) ? state.workspaceFiles.length : undefined
                             })}
                         </div>
                     </details>
@@ -5507,6 +5607,8 @@ export class ContextBinder {
             onToggleInlineBulk: () => void;
             onApplyPreset: (presetName: string) => void;
             onOpenLibrarian?: () => void;
+            onToggleUnloaded?: () => void;
+            onLoadUnloadedFile?: (filePath: string) => void;
             onToggleMuteFile: (filePath: string, isMutingNow: boolean) => void;
             onBulkMuteFolder: (paths: string[], isUnmuting: boolean) => void;
             onBulkMute: (paths: string[]) => void;
@@ -5572,8 +5674,18 @@ export class ContextBinder {
             if (refreshBulkCheckStatus) refreshBulkCheckStatus();
         };
 
+        let filterDebounce: any;
         if (searchInp) {
-            searchInp.oninput = () => applyFilesFilter(searchInp.value);
+            searchInp.oninput = () => {
+                const val = searchInp.value;
+                applyFilesFilter(val);
+                if (callbacks.onToggleUnloaded) {
+                    clearTimeout(filterDebounce);
+                    filterDebounce = setTimeout(() => {
+                        callbacks.onFilterChange(val);
+                    }, 180);
+                }
+            };
             searchInp.onkeydown = (e) => {
                 if (e.key === 'Escape') {
                     searchInp.value = '';
@@ -5655,6 +5767,35 @@ export class ContextBinder {
             });
         });
 
+        const toggleUnloadedBtn = container.querySelector('.fp-toggle-unloaded-btn') as HTMLElement;
+        if (toggleUnloadedBtn && callbacks.onToggleUnloaded) {
+            toggleUnloadedBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                callbacks.onToggleUnloaded!();
+            };
+        }
+
+        const inlineShowUnloadedBtn = container.querySelector('.fp-inline-show-unloaded-btn') as HTMLElement;
+        if (inlineShowUnloadedBtn && callbacks.onToggleUnloaded) {
+            inlineShowUnloadedBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                callbacks.onToggleUnloaded!();
+            };
+        }
+
+        container.querySelectorAll('.load-unloaded-file-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const p = (btn as HTMLElement).dataset.path;
+                if (p && callbacks.onLoadUnloadedFile) {
+                    callbacks.onLoadUnloadedFile(p);
+                }
+            });
+        });
+
         const toggleBulkBtn = container.querySelector('.fp-toggle-bulk-btn') as HTMLElement;
         if (toggleBulkBtn) {
             toggleBulkBtn.onclick = (e) => {
@@ -5733,30 +5874,20 @@ export class ContextBinder {
 
             const getCheckedPaths = (): string[] => getTargetFileChecks().filter(c => c.checked).map(c => c.dataset.path || '').filter(Boolean);
 
-            if (muteBtn) muteBtn.onclick = (e) => {
-                e.preventDefault(); e.stopPropagation();
-                const paths = getCheckedPaths();
-                if (paths.length === 0) { vscode.postMessage({ command: 'showWarning', message: 'No files selected.' }); return; }
-                callbacks.onBulkMute(paths);
-            };
-            if (unmuteBtn) unmuteBtn.onclick = (e) => {
-                e.preventDefault(); e.stopPropagation();
-                const paths = getCheckedPaths();
-                if (paths.length === 0) { vscode.postMessage({ command: 'showWarning', message: 'No files selected.' }); return; }
-                callbacks.onBulkUnmute(paths);
-            };
-            if (structBtn) structBtn.onclick = (e) => {
-                e.preventDefault(); e.stopPropagation();
-                const paths = getCheckedPaths();
-                if (paths.length === 0) { vscode.postMessage({ command: 'showWarning', message: 'No files selected.' }); return; }
-                callbacks.onBulkStructure(paths);
-            };
-            if (removeBtn) removeBtn.onclick = (e) => {
-                e.preventDefault(); e.stopPropagation();
-                const paths = getCheckedPaths();
-                if (paths.length === 0) { vscode.postMessage({ command: 'showWarning', message: 'No files selected.' }); return; }
-                callbacks.onBulkRemove(paths);
-            };
+            const bulkStateSelect = inlineBulkToolbar.querySelector('.fp-bulk-state-select') as HTMLSelectElement | null;
+            const bulkApplyStateBtn = inlineBulkToolbar.querySelector('.fp-bulk-apply-state-btn') as HTMLElement | null;
+            if (bulkApplyStateBtn && bulkStateSelect) {
+                bulkApplyStateBtn.onclick = (e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    const paths = getCheckedPaths();
+                    if (paths.length === 0) { vscode.postMessage({ command: 'showWarning', message: 'No files selected.' }); return; }
+                    const targetState = bulkStateSelect.value;
+                    if (targetState === 'included') callbacks.onBulkUnmute(paths);
+                    else if (targetState === 'definitions-only') callbacks.onBulkStructure(paths);
+                    else if (targetState === 'muted') callbacks.onBulkMute(paths);
+                    else if (targetState === 'unloaded') callbacks.onBulkRemove(paths);
+                };
+            }
         }
 
         const updateFolderMuteDom = (folderDetails: HTMLElement) => {
@@ -5806,15 +5937,16 @@ export class ContextBinder {
             }
         };
 
+        const isWizardPanel = container.id === 'wizard-files-panel-host';
         const updateFileMuteDom = (filePath: string, isMuted: boolean) => {
             const normPath = filePath.replace(/\\/g, '/').toLowerCase().trim();
             container.querySelectorAll(`.context-item[data-path]`).forEach((row: any) => {
                 const rowPath = row.dataset.path || '';
                 if (areFilesMatching(rowPath, filePath)) {
                     row.classList.toggle('file-muted', isMuted);
-                    if (!isMuted) {
+                    const structBtn = row.querySelector('.toggle-structure-file-btn') as HTMLElement;
+                    if (!isMuted && !isWizardPanel) {
                         row.classList.remove('file-def-only');
-                        const structBtn = row.querySelector('.toggle-structure-file-btn') as HTMLElement;
                         if (structBtn) {
                             structBtn.classList.remove('is-active');
                             structBtn.dataset.state = 'definitions-only';
@@ -5822,6 +5954,9 @@ export class ContextBinder {
                             structBtn.style.opacity = '0.6';
                             structBtn.title = 'Half-Mute: Include Structure / Definitions Only (save tokens)';
                         }
+                    } else if (structBtn) {
+                        const isDefOnlyRow = row.classList.contains('file-def-only');
+                        structBtn.style.opacity = isMuted ? '0.35' : (isDefOnlyRow ? '1' : '0.6');
                     }
                     const btn = row.querySelector('.toggle-mute-file-btn') as HTMLElement;
                     if (btn) {
@@ -5866,17 +6001,49 @@ export class ContextBinder {
             });
         };
 
-        container.querySelectorAll('.toggle-mute-file-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.preventDefault();
+        container.querySelectorAll('.file-state-select').forEach(sel => {
+            sel.addEventListener('change', (e) => {
                 e.stopPropagation();
-                const pathVal = (btn as HTMLElement).dataset.path;
+                const selectEl = sel as HTMLSelectElement;
+                const pathVal = selectEl.dataset.path;
+                const targetState = selectEl.value;
                 if (!pathVal) return;
-                const currentMuted = callbacks.getMutedFiles();
-                const isMutedNow = currentMuted.some(p => areFilesMatching(p, pathVal));
-                const isMutingNow = !isMutedNow;
-                updateFileMuteDom(pathVal, isMutingNow);
-                callbacks.onToggleMuteFile(pathVal, isMutingNow);
+                if (targetState === 'included') {
+                    if (callbacks.onLoadUnloadedFile) callbacks.onLoadUnloadedFile(pathVal);
+                    else callbacks.onToggleMuteFile(pathVal, false);
+                } else if (targetState === 'definitions-only') {
+                    callbacks.onToggleStructure(pathVal, 'definitions-only');
+                } else if (targetState === 'muted') {
+                    callbacks.onToggleMuteFile(pathVal, true);
+                } else if (targetState === 'unloaded') {
+                    callbacks.onRemoveSingle(pathVal, selectEl.closest('.context-item') as HTMLElement | null);
+                }
+            });
+        });
+
+        container.querySelectorAll('.folder-state-select').forEach(sel => {
+            sel.addEventListener('click', (e) => {
+                e.stopPropagation();
+            });
+            sel.addEventListener('change', (e) => {
+                e.stopPropagation();
+                const selectEl = sel as HTMLSelectElement;
+                const rawPaths = selectEl.dataset.paths;
+                const targetState = selectEl.value;
+                if (!rawPaths || targetState === 'mixed') return;
+                try {
+                    const paths: string[] = JSON.parse(decodeURIComponent(rawPaths));
+                    if (paths.length === 0) return;
+                    if (targetState === 'included') {
+                        callbacks.onBulkUnmute(paths);
+                    } else if (targetState === 'definitions-only') {
+                        callbacks.onBulkStructure(paths);
+                    } else if (targetState === 'muted') {
+                        callbacks.onBulkMute(paths);
+                    } else if (targetState === 'unloaded') {
+                        callbacks.onBulkRemove(paths);
+                    }
+                } catch {}
             });
         });
 
@@ -6807,13 +6974,20 @@ export class ContextBinder {
                     return;
                 }
 
-                // 2. Click on [MUTED] token badge in HUD tree list
+                // 2. Click on [MUTED] token badge in HUD or Wizard tree list
                 const mutePill = target.closest('.clickable-unmute-pill') as HTMLElement;
                 if (mutePill) {
                     e.preventDefault();
                     e.stopPropagation();
                     const p = mutePill.dataset.path;
                     if (p) {
+                        if (mutePill.closest('#wizard-files-panel-host')) {
+                            import('./ui.js').then(ui => {
+                                ui.setWizardFilesMuted([p], false);
+                                ui.renderWizardFileList();
+                            });
+                            return;
+                        }
                         queuedUnmutePaths.clear();
                         updateFloatingUnmuteBar();
                         vscode.postMessage({ command: 'bulkUnmuteFiles', paths: [p] });
@@ -6933,7 +7107,23 @@ export class ContextBinder {
             sortOrder: state.fileSortOrder || 'heavy-to-light',
             getMutedFiles: () => state.mutedFiles || [],
             onFilterChange: (q) => {
+                const prevQ = ((state as any).hudFileFilterQuery || '').trim();
                 (state as any).hudFileFilterQuery = q;
+                if ((q.trim().length > 0 || prevQ.length > 0) && !state.showUnloadedFiles) {
+                    updateContext();
+                    const freshInp = document.getElementById('hud-files-search-input') as HTMLInputElement;
+                    if (freshInp) {
+                        freshInp.focus();
+                        freshInp.setSelectionRange(freshInp.value.length, freshInp.value.length);
+                    }
+                }
+            },
+            onToggleUnloaded: () => {
+                state.showUnloadedFiles = !state.showUnloadedFiles;
+                updateContext();
+            },
+            onLoadUnloadedFile: (filePath) => {
+                vscode.postMessage({ command: 'addFilesToContext', files: [filePath] });
             },
             onSortChange: (newOrder) => {
                 state.fileSortOrder = newOrder as any;
@@ -7502,9 +7692,21 @@ export function updateContext(
         const currentMutedSkills = state.mutedSkills || state.lastContextData.mutedSkills || [];
         const currentMutedDiagrams = state.mutedDiagrams || state.lastContextData.mutedDiagrams || [];
 
+        const unloadedTotal = Array.isArray(state.workspaceFiles) ? state.workspaceFiles.length : 0;
+        const projectEmptyMsg = unloadedTotal > 0 && !state.showUnloadedFiles
+            ? `<div style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:6px 0;">
+                <span>No project files selected. Click <strong>Unloaded (${unloadedTotal})</strong> above or type in the filter box to browse workspace files.</span>
+                <button type="button" class="code-action-btn secondary-btn fp-inline-show-unloaded-btn" style="height:22px; font-size:10px; padding:0 10px;"><span class="codicon codicon-files"></span> Show Unloaded Files (${unloadedTotal})</button>
+               </div>`
+            : "No project files selected.";
+
         // Skip building heavy file-tree/skills/markdown DOM when HUD is collapsed
         const projectFilesHtml = state.isHudExpanded
-            ? ContextPresenter.renderFileList(safeProjectFiles, "No project files selected.", false, tokenMap, sortOrder, currentMutedFiles)
+            ? ContextPresenter.renderFileList(safeProjectFiles, projectEmptyMsg, false, tokenMap, sortOrder, currentMutedFiles, {
+                workspaceFiles: state.workspaceFiles || [],
+                showUnloaded: !!state.showUnloadedFiles,
+                filterQuery: (state as any).hudFileFilterQuery || ''
+            })
             : '';
         const externalFilesHtml = state.isHudExpanded
             ? ContextPresenter.renderFileList(safeExternalFiles, "No external documents or links in context.", true, tokenMap, sortOrder, currentMutedFiles)

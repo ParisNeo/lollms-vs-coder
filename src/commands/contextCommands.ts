@@ -164,31 +164,15 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
                     if (!p.isDisposed) openPanels.add(p);
                 });
 
-                const allIncluded = provider.getIncludedFiles();
-
                 for (const panel of openPanels) {
                     if (state === 'included' || state === 'definitions-only') {
-                        await panel.unmuteFiles(relPaths);
+                        await panel.unmuteFiles(relPaths, { skipTokenUpdate: true });
                         await panel.addFilesToDiscussionContext(relPaths, state);
+                        panel.recordCurrentPromptFiles(relPaths);
                     } else if (state === 'fully-excluded' || state === 'tree-only') {
                         await panel.removeFilesFromDiscussionContext(relPaths);
                     }
-
-                    const disc = panel.getCurrentDiscussion();
-                    if (disc) {
-                        (disc as any).includedFiles = JSON.parse(JSON.stringify(allIncluded));
-                        if (disc.capabilities) {
-                            (disc.capabilities as any).includedFiles = (disc as any).includedFiles;
-                        }
-                        if (!disc.id.startsWith('temp-')) {
-                            await services.discussionManager.saveDiscussion(disc);
-                        }
-                    }
-
-                    if (state === 'included' || state === 'definitions-only') {
-                        panel.recordCurrentPromptFiles(relPaths);
-                    }
-                    panel.updateContextAndTokens({ isBackgroundSync: false });
+                    panel.updateContextAndTokens({ isBackgroundSync: true });
                 }
             }
         } else {
@@ -339,8 +323,8 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
             discussion.capabilities = services.discussionManager.getLastCapabilities();
         }
 
-        // Automatically configure Fast Mode and apply muting
-        discussion.capabilities.fastMode = true;
+        // Apply muting
+        discussion.capabilities.useLibrarian = false;
         discussion.capabilities.mutedFiles = filesToMute;
 
         await services.discussionManager.saveDiscussion(discussion);
@@ -666,7 +650,7 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
                 await panel.muteFiles(mutedFiles);
             }
 
-            await panel.updateCapabilities({ fastMode: true });
+            await panel.updateCapabilities({ useLibrarian: false });
             panel.updateContextAndTokens({ isBackgroundSync: false });
         }
 

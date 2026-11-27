@@ -336,7 +336,7 @@ export interface DiscussionCapabilities {
     contextGovernorEnabled?: boolean; // New key
     contextGovernorPermanentPruning?: boolean; // New key
     enableSymbolMode?: boolean; // New key
-    fastMode?: boolean; // Combine Phase 2 (Plan) and Phase 3 (Code) in a single run
+    useLibrarian?: boolean; // Controlled by automation toggle: whether to run Context Librarian before coding
     ignoreContextSize?: boolean; // Ignore context size limit in Context Librarian (keep all task files loaded)
     userPreferences?: string; // Custom user preferences and coding guidelines injected into system prompt
     userPreferenceProfileId?: string; // Selected user preference profile ID
@@ -1241,8 +1241,9 @@ export async function getProcessedSystemPrompt(
         finalPersona = config.get<string>(key) || "You are an expert software engineer.";
     }
 
-    const isFastMode = promptType !== 'agent' && promptType !== 'surgical_agent' && capabilities?.fastMode !== false;
-    if (workingMemory && !isFastMode) {
+    const useLibrarian = promptType !== 'agent' && promptType !== 'surgical_agent' && capabilities?.useLibrarian === true && capabilities?.contextGovernorEnabled !== false;
+    const isLibrarianInactive = !useLibrarian;
+    if (workingMemory && !isLibrarianInactive) {
         finalPersona = `### 🧠 LIBRARIAN'S CONTEXT ANALYSIS\n${workingMemory}\n\n${finalPersona}`;
     }
 
@@ -1299,7 +1300,7 @@ You are STRICTLY FORBIDDEN from using colon-delimited markdown backticks (like \
             capabilities, 
             forceFullCode, 
             context
-        ) + (isFastMode || isExport ? "" : ("\n" + fileMutationProtocol));
+        ) + (!useLibrarian || isExport ? "" : ("\n" + fileMutationProtocol));
     } catch (buildErr: any) {
         Logger.error(`[getProcessedSystemPrompt] PromptTemplates.build error: ${buildErr?.message || buildErr}`, buildErr);
         basePrompt = (finalPersona || "You are an expert software engineer.") + ("\n" + fileMutationProtocol);
@@ -1353,9 +1354,9 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
 
     let operationalMandate = "";
 
-    if (isFastMode) {
+    if (!useLibrarian && !isExport && !isAutonomous && !isBuilder && promptType !== 'surgical_agent' && !isDynamic) {
         operationalMandate = `
-    ### 🛡️ FAST MODE: DIRECT IMPLEMENTATION & PHASED CONTEXT
+    ### 🛡️ DIRECT IMPLEMENTATION & PHASED CONTEXT
     - Deliver the implementation directly in <file> tags.
     - **Work in Phases (Prevent Context Loops)**: Never try to load all files at once. Load only a small subset (1–3 files) per phase via \`<add_files_to_context>\` / \`<unmute_files>\`, release finished files with \`<mute_files>\` before loading more, and use \`<show_symbol>\` / \`<peek_files>\` / \`<load_structure>\` for targeted lookups.
     - **If a Fix Fails in One Go**: Automatically instrument the code with \`[LOLLMS_DEBUG]\` logs to test your hypothesis and emit a \`<user_instruction title="..." type="instrumentation" hypothesis="...">\` block telling the user how to run and what output to report back.
@@ -1458,7 +1459,7 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
     }
 
     // --- GOVERNOR'S CODEBASE ARCHITECTURE & WORKINGS REPORT ---
-    const isReportSuppressed = (context as any)?.suppressLibrarianReport === true || isFastMode;
+    const isReportSuppressed = (context as any)?.suppressLibrarianReport === true || isLibrarianInactive;
     let governorReport = isReportSuppressed ? '' : ((context as any)?.governorReport || '');
     if (!governorReport && !isReportSuppressed && vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
         try {
@@ -1507,7 +1508,7 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
             .replace(/^[^\n]*\bexecute_code\b[^\n]*(?:\n|$)/gim, '')
             .replace(/\n{3,}/g, '\n\n');
     }
-    return isFastMode ? stripLibrarianReferences(combinedSystemPrompt) : combinedSystemPrompt;
+    return isLibrarianInactive ? stripLibrarianReferences(combinedSystemPrompt) : combinedSystemPrompt;
 }
 
 /**
@@ -2133,6 +2134,13 @@ export function parseFileTagAttributes(attrStr: string, rawContent?: string): Fi
 export function normalizePseudoFileBlocks(text: string): string {
     if (!text || typeof text !== 'string') return '';
     let result = text;
+
+    result = result.replace(/<execute_command\b[^>]*>[\s\r\n]*(?:<command\b[^>]*>([\s\S]*?)<\/command>|([\s\S]*?))[\s\r\n]*<\/execute_command>/gi, (_m, cmd1, cmd2) => {
+        const body = (cmd1 ?? cmd2 ?? '').trim();
+        return `<execute_code lang="bash">\n${body}\n</execute_code>
+
+`;
+    });
 
     const replaceTagRegex = /<replace\b[^>]*>[\s\r\n]*<search\b[^>]*>([\s\S]*?)<\/search>[\s\r\n]*<(?:replace_with|replace)\b[^>]*>([\s\S]*?)<\/(?:replace_with|replace)>[\s\r\n]*<\/replace>/gi;
     result = result.replace(replaceTagRegex, (_match, s, r) => {

@@ -167,8 +167,8 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         userPreferenceProfileId?: string,
         userPreferences?: string,
         reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'max',
-        fastMode?: boolean,
         mutedFiles?: string[],
+        includedFiles?: Array<{ path: string; state?: string; symbols?: string[] }>,
         importedSkills?: string[],
         projectSkills?: string[],
         sendToAi: boolean
@@ -188,11 +188,21 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
             discussion.model = params.model;
         }
 
-        // Apply muted files if passed (e.g. from Governor)
+        // Apply muted files if passed (e.g. from Governor or Wizard)
         if (params.mutedFiles && Array.isArray(params.mutedFiles)) {
             discussion.mutedFiles = [...params.mutedFiles];
             if (discussion.capabilities) {
                 discussion.capabilities.mutedFiles = [...params.mutedFiles];
+            }
+            if (params.contextSelection !== 'empty') {
+                await services.discussionManager.saveLastMutedFiles(discussion.mutedFiles);
+            }
+        }
+
+        if (params.contextSelection !== 'empty' && Array.isArray(params.includedFiles)) {
+            (discussion as any).includedFiles = JSON.parse(JSON.stringify(params.includedFiles));
+            if (discussion.capabilities) {
+                (discussion.capabilities as any).includedFiles = JSON.parse(JSON.stringify(params.includedFiles));
             }
         }
 
@@ -209,9 +219,6 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
             discussion.capabilities.selectedFolders = params.selectedFolders;
             if (params.reasoningEffort !== undefined) {
                 discussion.capabilities.reasoningEffort = params.reasoningEffort;
-            }
-            if (params.fastMode !== undefined) {
-                discussion.capabilities.fastMode = params.fastMode;
             }
             if (params.userPreferenceProfileId !== undefined) {
                 discussion.capabilities.userPreferenceProfileId = params.userPreferenceProfileId;

@@ -96,6 +96,38 @@ function installHudStatusObserver(): void {
 }
 
 let hudActivityMode: HudActivityMode = 'idle';
+let generationStartedAt: number = 0;
+
+function playCompletionChime(): void {
+    try {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        const now = ctx.currentTime;
+
+        const playTone = (freq: number, startTime: number, duration: number, gainVal: number) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(freq, startTime);
+            gain.gain.setValueAtTime(0.001, startTime);
+            gain.gain.exponentialRampToValueAtTime(gainVal, startTime + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start(startTime);
+            osc.stop(startTime + duration);
+        };
+
+        playTone(587.33, now, 0.18, 0.12);       // D5
+        playTone(880.00, now + 0.12, 0.28, 0.12); // A5
+        setTimeout(() => {
+            try { ctx.close(); } catch {}
+        }, 600);
+    } catch {
+        // Ignore audio errors if blocked by browser policy
+    }
+}
 
 export function setHudActivityState(mode: HudActivityMode): void {
     ensureHudPulseStyles();
@@ -1436,8 +1468,16 @@ export function setCalculatingTokens(isCalculating: boolean, text?: string) {
 
 
 export function setGeneratingState(isGenerating: boolean, statusText?: string, showRaiseHand: boolean = false, buttonLabel?: string) {
+    const wasGenerating = state.isGenerating;
     state.isGenerating = isGenerating;
+    if (isGenerating && !wasGenerating) {
+        generationStartedAt = Date.now();
+    }
     if (!isGenerating) {
+        if (wasGenerating && generationStartedAt > 0 && (Date.now() - generationStartedAt) >= 3000) {
+            playCompletionChime();
+        }
+        generationStartedAt = 0;
         setHudActivityState('idle');
     } else {
         // Default to generating (red pulse) the instant generation starts, so
@@ -2343,7 +2383,6 @@ export class BadgesBinder {
         const allOptionsList = [
             { label: '🧠 Thinking Mode', icon: 'codicon-circuit-board', key: 'thinkingMode', assistantOnly: false },
             { label: '📚 Librarian Mode', icon: 'codicon-library', key: 'librarianMode', assistantOnly: true },
-            { label: '💻 Code Issuing', icon: 'codicon-terminal', key: 'allowCodeExecution', assistantOnly: true },
             { label: '⚡ Auto Mode', icon: 'codicon-zap', key: 'autoExecuteTools', assistantOnly: true },
             { label: '📊 SPARQL Engine', icon: 'codicon-graph', key: 'sparqlEnabled', assistantOnly: false },
             { label: '🔍 GREP Indexer', icon: 'codicon-search', key: 'grepEnabled', assistantOnly: false },
@@ -2861,7 +2900,7 @@ export function updateBadges() {
     // --- ⚡ COMPOSABLE AUTOMATION & CODE ISSUING (Assistant Mode ONLY) ---
     if (!isAgent) {
         const allowCodeExecution = caps.allowCodeExecution === true;
-        const callLibrarian = caps.fastMode === false;
+        const callLibrarian = caps.useLibrarian === true;
         const autoApply = caps.autoApply === true;
         const autoScouting = caps.autoExecuteScouting === true;
         const autoCode = allowCodeExecution && caps.autoExecuteCode === true;
@@ -3002,10 +3041,10 @@ export function updateBadges() {
                     const partial: any = {};
 
                     if (key === 'callLibrarianFirst') {
-                        partial.fastMode = !checked;
+                        partial.useLibrarian = checked;
                         if (checked) partial.contextGovernorEnabled = true;
                         if (state.capabilities) {
-                            state.capabilities.fastMode = !checked;
+                            state.capabilities.useLibrarian = checked;
                             if (checked) state.capabilities.contextGovernorEnabled = true;
                         }
                     } else if (key === 'allowCodeExecution') {
@@ -3093,7 +3132,7 @@ export function updateBadges() {
 
             const setAllAuto = (enable: boolean) => {
                 const partial: any = {
-                    fastMode: !enable,
+                    useLibrarian: enable,
                     allowCodeExecution: enable,
                     autoApply: enable,
                     autoExecuteScouting: enable,
@@ -5790,6 +5829,8 @@ export interface WizardCandidateFile {
     tokens: number;
     bytes: number;
     mtime: number;
+    state?: string;
+    symbols?: string[];
 }
 
 export let wizardCandidateFiles: WizardCandidateFile[] = [];
@@ -5894,8 +5935,11 @@ export function updateWizardContextBar() {
             mutedCount++;
         } else {
             activeCount++;
-            activeFilesTokens += f.tokens;
-            activeFilesBytes += f.bytes;
+            const isDefOnly = f.state === 'definitions-only' || f.state === 'structure' || f.state === 'definitions';
+            const effTokens = isDefOnly ? Math.min(f.tokens, Math.max(25, Math.round(f.tokens * 0.15))) : f.tokens;
+            const effBytes = isDefOnly ? Math.round(effTokens * 3.5) : f.bytes;
+            activeFilesTokens += effTokens;
+            activeFilesBytes += effBytes;
         }
     });
 
@@ -6026,7 +6070,18 @@ export function renderWizardFileList(searchQuery?: string) {
 
     import('./messageRenderer.js').then(m => {
         if (renderSeq !== wizardFileListRenderSeq) return;
+
+        // Capture folder open/closed states & scroll position before replacing innerHTML
+        const openStates: Record<string, boolean> = {};
+        host.querySelectorAll('details').forEach((d, i) => {
+            const key = d.getAttribute('data-folder') || d.getAttribute('data-path') || d.id || i.toString();
+            openStates[key] = d.open;
+        });
+        const prevScrollEl = host.querySelector('.context-tree-root-container, .context-file-list') as HTMLElement | null;
+        const prevScrollTop = prevScrollEl ? prevScrollEl.scrollTop : 0;
+
         const mutedList = getCanonicalWizardMutedList();
+        const showUnloaded = !!(state as any).wizardShowUnloadedFiles;
         const filesHtml = m.ContextPresenter.renderFileList(
             wizardCandidateFiles,
             "No candidate files in context. Use Add File or Power Search above.",
@@ -6034,7 +6089,12 @@ export function renderWizardFileList(searchQuery?: string) {
             state.fileTokensMap || {},
             sortOrder,
             mutedList,
-            { isInlineBulkMode: isBulk }
+            {
+                isInlineBulkMode: isBulk,
+                workspaceFiles: state.workspaceFiles || [],
+                showUnloaded,
+                filterQuery: effectiveQuery
+            }
         );
 
         host.innerHTML = m.ContextPresenter.renderFilesPanelHtml({
@@ -6044,8 +6104,19 @@ export function renderWizardFileList(searchQuery?: string) {
             sortOrder,
             isInlineBulkMode: isBulk,
             filterQuery: effectiveQuery,
-            showLibrarianBtn: false
+            showLibrarianBtn: false,
+            showUnloaded,
+            unloadedCount: Array.isArray(state.workspaceFiles) ? state.workspaceFiles.length : undefined
         });
+
+        host.querySelectorAll('details').forEach((d, i) => {
+            const key = d.getAttribute('data-folder') || d.getAttribute('data-path') || d.id || i.toString();
+            if (openStates[key] !== undefined) d.open = openStates[key];
+        });
+        const nextScrollEl = host.querySelector('.context-tree-root-container, .context-file-list') as HTMLElement | null;
+        if (nextScrollEl && prevScrollTop > 0) {
+            nextScrollEl.scrollTop = prevScrollTop;
+        }
 
         refreshVisibilityPresetsDropdowns();
 
@@ -6054,11 +6125,66 @@ export function renderWizardFileList(searchQuery?: string) {
             updateWizardContextBar();
         };
 
+        const setWizardFilesStructure = (paths: string[], targetState: string) => {
+            for (const p of paths) {
+                const cand = wizardCandidateFiles.find(f => areWizardPathsEqual(f.path, p));
+                if (cand) {
+                    cand.state = targetState;
+                    if (targetState === 'included') delete cand.symbols;
+                }
+            }
+            setWizardFilesMuted(paths, false);
+        };
+
+        const ensureInWizardCandidates = (paths: string[], targetState: string = 'included') => {
+            for (const p of paths) {
+                const rawPath = p.replace(/\\/g, '/').trim();
+                if (!rawPath) continue;
+                const existing = wizardCandidateFiles.find(f => areWizardPathsEqual(f.path, rawPath));
+                if (!existing) {
+                    const fileName = rawPath.split('/').pop() || rawPath;
+                    const dirName = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
+                    wizardCandidateFiles.push({
+                        path: rawPath,
+                        fileName,
+                        dirName,
+                        tokens: 0,
+                        bytes: 0,
+                        mtime: 0,
+                        state: targetState
+                    });
+                } else {
+                    existing.state = targetState;
+                    if (targetState === 'included') delete existing.symbols;
+                }
+            }
+        };
+
         m.ContextBinder.bindFilesPanel(host, {
             filterQuery: effectiveQuery,
             sortOrder,
             getMutedFiles: () => getCanonicalWizardMutedList(),
-            onFilterChange: (q) => { (state as any).wizardFileFilterQuery = q; },
+            onFilterChange: (q) => {
+                const prevQ = ((state as any).wizardFileFilterQuery || '').trim();
+                (state as any).wizardFileFilterQuery = q;
+                if ((q.trim().length > 0 || prevQ.length > 0) && !(state as any).wizardShowUnloadedFiles) {
+                    renderWizardFileList(q);
+                    const freshInp = document.getElementById('wizard-files-search-input') as HTMLInputElement;
+                    if (freshInp) {
+                        freshInp.focus();
+                        freshInp.setSelectionRange(freshInp.value.length, freshInp.value.length);
+                    }
+                }
+            },
+            onToggleUnloaded: () => {
+                (state as any).wizardShowUnloadedFiles = !(state as any).wizardShowUnloadedFiles;
+                renderWizardFileList();
+            },
+            onLoadUnloadedFile: (filePath) => {
+                ensureInWizardCandidates([filePath], 'included');
+                setWizardFilesMuted([filePath], false);
+                renderWizardFileList();
+            },
             onSortChange: (newOrder) => {
                 (state as any).wizardFileSortOrder = newOrder;
                 try { localStorage.setItem('lollms_wizard_file_sort_order', newOrder); } catch {}
@@ -6083,7 +6209,13 @@ export function renderWizardFileList(searchQuery?: string) {
                 renderWizardFileList();
             },
             onBulkUnmute: (paths) => {
+                ensureInWizardCandidates(paths, 'included');
                 setWizardFilesMuted(paths, false);
+                renderWizardFileList();
+            },
+            onBulkStructure: (paths) => {
+                ensureInWizardCandidates(paths, 'definitions-only');
+                setWizardFilesStructure(paths, 'definitions-only');
                 renderWizardFileList();
             },
             onBulkRemove: (paths) => {
@@ -6107,8 +6239,8 @@ export function renderWizardFileList(searchQuery?: string) {
                 renderWizardFileList();
             },
             onToggleStructure: (filePath, targetState) => {
-                vscode.postMessage({ command: 'toggleFileStructure', path: filePath, targetState });
-                updateWizardContextBar();
+                setWizardFilesStructure([filePath], targetState);
+                renderWizardFileList();
             }
         });
 
@@ -6194,16 +6326,23 @@ export function openNewDiscussionWizard(
     }
 
     const mtimeMap = (state as any).fileMtimeMap || {};
-    wizardCandidateFiles = allFiles.map((f: any) => {
-        const rawPath = typeof f === 'string' ? f : (f.path || '');
-        const normPath = rawPath.replace(/\\/g, '/');
-        const fileName = normPath.split('/').pop() || normPath;
-        const dirName = normPath.includes('/') ? normPath.substring(0, normPath.lastIndexOf('/')) : '';
-        const tokens = (typeof f === 'object' && f.tokens) ? f.tokens : (state.fileTokensMap?.[rawPath] || Math.ceil((f.bytes || 1000) / 3.5));
-        const bytes = (typeof f === 'object' && f.bytes) ? f.bytes : Math.round(tokens * 3.5);
-        const mtime = (typeof f === 'object' && f.mtime) ? f.mtime : (mtimeMap[rawPath] || 0);
-        return { path: rawPath, fileName, dirName, tokens, bytes, mtime };
-    });
+    const registry = (window as any).lazyFilesRegistry;
+    const dedupedWizardFiles: WizardCandidateFile[] = [];
+    for (const f of allFiles) {
+        const rawPath = (typeof f === 'string' ? f : (f?.path || '')).replace(/\\/g, '/').trim();
+        if (!rawPath) continue;
+        if (dedupedWizardFiles.some(existing => areWizardPathsEqual(existing.path, rawPath))) continue;
+        const regItem = registry?.get(rawPath);
+        const fileName = rawPath.split('/').pop() || rawPath;
+        const dirName = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
+        const tokens = (typeof f === 'object' && f.tokens) ? f.tokens : (regItem?.tokens || state.fileTokensMap?.[rawPath] || Math.ceil(((typeof f === 'object' ? f.bytes : 0) || regItem?.bytes || 1000) / 3.5));
+        const bytes = (typeof f === 'object' && f.bytes) ? f.bytes : (regItem?.bytes || Math.round(tokens * 3.5));
+        const mtime = (typeof f === 'object' && f.mtime) ? f.mtime : (regItem?.mtime || mtimeMap[rawPath] || 0);
+        const fileState = (typeof f === 'object' && f.state) ? f.state : (regItem?.state || 'included');
+        const symbols = (typeof f === 'object' && Array.isArray(f.symbols)) ? [...f.symbols] : (Array.isArray(regItem?.symbols) ? [...regItem.symbols] : undefined);
+        dedupedWizardFiles.push({ path: rawPath, fileName, dirName, tokens, bytes, mtime, state: fileState, symbols });
+    }
+    wizardCandidateFiles = dedupedWizardFiles;
 
     const savedSortOrder = (typeof localStorage !== 'undefined' ? localStorage.getItem('lollms_wizard_file_sort_order') : null) as any || 'visible-first';
     (state as any).wizardFileSortOrder = savedSortOrder;
@@ -6376,10 +6515,7 @@ export function openNewDiscussionWizard(
         wizardEffortSelect.value = state.capabilities?.reasoningEffort || 'low';
     }
 
-    const wizardFastModeCheck = document.getElementById('wizard-fast-mode') as HTMLInputElement;
-    if (wizardFastModeCheck) {
-        wizardFastModeCheck.checked = state.capabilities?.fastMode !== false;
-    }
+
 
     // 6. Reset governor caller context for wizard
     state.governorCaller = 'chat';

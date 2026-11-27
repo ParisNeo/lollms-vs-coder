@@ -973,6 +973,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 if (message.governorReport !== undefined && state.lastContextData) {
                     state.lastContextData.governorReport = message.governorReport;
                 }
+                if (Array.isArray(message.workspaceFiles)) {
+                    state.workspaceFiles = message.workspaceFiles;
+                }
 
                 updateContext(
                     message.context, 
@@ -992,19 +995,31 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 if (dom.wizardModal && dom.wizardModal.classList.contains('visible') && Array.isArray(message.files)) {
                     import('./ui.js').then(ui => {
                         const mtimeMap = (state as any).fileMtimeMap || {};
-                        ui.wizardCandidateFiles.length = 0;
-                        message.files.forEach((f: any) => {
-                            const rawPath = typeof f === 'string' ? f : (f.path || '');
-                            if (!rawPath) return;
-                            const normPath = rawPath.replace(/\\/g, '/');
-                            const fileName = normPath.split('/').pop() || normPath;
-                            const dirName = normPath.includes('/') ? normPath.substring(0, normPath.lastIndexOf('/')) : '';
-                            const tokens = (typeof f === 'object' && f.tokens) ? f.tokens : (state.fileTokensMap?.[rawPath] || Math.ceil((f.bytes || 1000) / 3.5));
-                            const bytes = (typeof f === 'object' && f.bytes) ? f.bytes : Math.round(tokens * 3.5);
-                            const mtime = (typeof f === 'object' && f.mtime) ? f.mtime : (mtimeMap[rawPath] || 0);
-                            ui.wizardCandidateFiles.push({ path: rawPath, fileName, dirName, tokens, bytes, mtime });
-                        });
-                        ui.renderWizardFileList();
+                        const prevByPath = new Map(ui.wizardCandidateFiles.map(cf => [cf.path.toLowerCase(), cf]));
+                        const nextFiles: any[] = [];
+                        for (const f of message.files) {
+                            const rawPath = (typeof f === 'string' ? f : (f?.path || '')).replace(/\\/g, '/').trim();
+                            if (!rawPath) continue;
+                            if (nextFiles.some(existing => ui.areWizardPathsEqual(existing.path, rawPath))) continue;
+                            const prev = prevByPath.get(rawPath.toLowerCase());
+                            const fileName = rawPath.split('/').pop() || rawPath;
+                            const dirName = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
+                            const tokens = (typeof f === 'object' && f.tokens) ? f.tokens : (prev?.tokens || state.fileTokensMap?.[rawPath] || Math.ceil((f.bytes || 1000) / 3.5));
+                            const bytes = (typeof f === 'object' && f.bytes) ? f.bytes : (prev?.bytes || Math.round(tokens * 3.5));
+                            const mtime = (typeof f === 'object' && f.mtime) ? f.mtime : (prev?.mtime || mtimeMap[rawPath] || 0);
+                            const fileState = prev?.state || (typeof f === 'object' && f.state) || 'included';
+                            const symbols = prev?.symbols || (typeof f === 'object' && Array.isArray(f.symbols) ? [...f.symbols] : undefined);
+                            nextFiles.push({ path: rawPath, fileName, dirName, tokens, bytes, mtime, state: fileState, symbols });
+                        }
+                        const changed = nextFiles.length !== ui.wizardCandidateFiles.length ||
+                            nextFiles.some((nf, idx) => !ui.areWizardPathsEqual(nf.path, ui.wizardCandidateFiles[idx]?.path || ''));
+                        if (changed) {
+                            ui.wizardCandidateFiles.length = 0;
+                            ui.wizardCandidateFiles.push(...nextFiles);
+                            ui.renderWizardFileList();
+                        } else {
+                            ui.updateWizardContextBar();
+                        }
                     });
                 }
                 // updateContext() already refreshes badges cleanly
@@ -1023,6 +1038,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         if (mutedTools) state.mutedTools = mutedTools;
                         if (mutedSkills) state.mutedSkills = mutedSkills;
                         if (mutedDiagrams) state.mutedDiagrams = mutedDiagrams;
+                        if (Array.isArray(message.workspaceFiles)) {
+                            state.workspaceFiles = message.workspaceFiles;
+                        }
 
                         state.lastContextData = {
                             context: "",
@@ -1064,19 +1082,31 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         if (dom.wizardModal && dom.wizardModal.classList.contains('visible') && Array.isArray(files)) {
                             import('./ui.js').then(ui => {
                                 const mtimeMap = (state as any).fileMtimeMap || {};
-                                ui.wizardCandidateFiles.length = 0;
-                                files.forEach((f: any) => {
-                                    const rawPath = typeof f === 'string' ? f : (f.path || '');
-                                    if (!rawPath) return;
-                                    const normPath = rawPath.replace(/\\/g, '/');
-                                    const fileName = normPath.split('/').pop() || normPath;
-                                    const dirName = normPath.includes('/') ? normPath.substring(0, normPath.lastIndexOf('/')) : '';
-                                    const tokens = (typeof f === 'object' && f.tokens) ? f.tokens : (state.fileTokensMap?.[rawPath] || Math.ceil((f.bytes || 1000) / 3.5));
-                                    const bytes = (typeof f === 'object' && f.bytes) ? f.bytes : Math.round(tokens * 3.5);
-                                    const mtime = (typeof f === 'object' && f.mtime) ? f.mtime : (mtimeMap[rawPath] || 0);
-                                    ui.wizardCandidateFiles.push({ path: rawPath, fileName, dirName, tokens, bytes, mtime });
-                                });
-                                ui.renderWizardFileList();
+                                const prevByPath = new Map(ui.wizardCandidateFiles.map(cf => [cf.path.toLowerCase(), cf]));
+                                const nextFiles: any[] = [];
+                                for (const f of files) {
+                                    const rawPath = (typeof f === 'string' ? f : (f?.path || '')).replace(/\\/g, '/').trim();
+                                    if (!rawPath) continue;
+                                    if (nextFiles.some(existing => ui.areWizardPathsEqual(existing.path, rawPath))) continue;
+                                    const prev = prevByPath.get(rawPath.toLowerCase());
+                                    const fileName = rawPath.split('/').pop() || rawPath;
+                                    const dirName = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
+                                    const tokens = (typeof f === 'object' && f.tokens) ? f.tokens : (prev?.tokens || state.fileTokensMap?.[rawPath] || Math.ceil((f.bytes || 1000) / 3.5));
+                                    const bytes = (typeof f === 'object' && f.bytes) ? f.bytes : (prev?.bytes || Math.round(tokens * 3.5));
+                                    const mtime = (typeof f === 'object' && f.mtime) ? f.mtime : (prev?.mtime || mtimeMap[rawPath] || 0);
+                                    const fileState = prev?.state || (typeof f === 'object' && f.state) || 'included';
+                                    const symbols = prev?.symbols || (typeof f === 'object' && Array.isArray(f.symbols) ? [...f.symbols] : undefined);
+                                    nextFiles.push({ path: rawPath, fileName, dirName, tokens, bytes, mtime, state: fileState, symbols });
+                                }
+                                const changed = nextFiles.length !== ui.wizardCandidateFiles.length ||
+                                    nextFiles.some((nf, idx) => !ui.areWizardPathsEqual(nf.path, ui.wizardCandidateFiles[idx]?.path || ''));
+                                if (changed) {
+                                    ui.wizardCandidateFiles.length = 0;
+                                    ui.wizardCandidateFiles.push(...nextFiles);
+                                    ui.renderWizardFileList();
+                                } else {
+                                    ui.updateWizardContextBar();
+                                }
                             });
                         }
                     } else if (action === 'lazy_load_file') {
@@ -1159,6 +1189,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
 
             case 'openNewDiscussionWizard':
+                if (Array.isArray(message.workspaceFiles)) {
+                    state.workspaceFiles = message.workspaceFiles;
+                }
                 openNewDiscussionWizard(message.selections || [], message.files, message.mutedFiles);
                 break;
             case 'openGovernorFilterModal':

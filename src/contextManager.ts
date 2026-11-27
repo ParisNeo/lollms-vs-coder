@@ -102,6 +102,7 @@ private _cachedTreeString: string | null = null;
   private _cachedVisibleFiles: string[] | null = null;
   private _recentlyAddedFiles: Map<string, number> = new Map();
   private _unpackedDirectories: Set<string> = new Set();
+  private _definitionsCache: Map<string, { mtime: number; size: number; definitions: string }> = new Map();
   private static PROJECT_TOOLS_KEY = 'lollms_project_active_tools';
   private missionBriefingManager: MissionBriefingManager;
 
@@ -238,6 +239,12 @@ private _cachedTreeString: string | null = null;
 
     this.removeCachedTokens(relPath);
     this.removeCachedTokens(uri.fsPath);
+    this._definitionsCache.delete(uri.fsPath);
+    for (const key of Array.from(this._definitionsCache.keys())) {
+      if (key.replace(/\\/g, '/').toLowerCase() === fsPathNorm) {
+        this._definitionsCache.delete(key);
+      }
+    }
     this.clearRenderedTreeCache();
     this._lastContext = null;
     this._lastContextByDiscussion.clear();
@@ -277,6 +284,7 @@ private _cachedTreeString: string | null = null;
     this._lastContext = null;
     this._lastContextByDiscussion.clear();
     this._unpackedDirectories.clear();
+    this._definitionsCache.clear();
     this._fileContentCache?.clear();
   }
 
@@ -364,7 +372,7 @@ private _cachedTreeString: string | null = null;
     const results: { path: string; content: string; error?: string }[] = [];
     for (const item of files) {
       const p = typeof item === 'string' ? item : item.path;
-      const opts = typeof item === 'object' ? item : {};
+      const opts: { path?: string; lines?: number; words?: number; offset?: number; from?: 'top' | 'bottom'; regex?: string } = typeof item === 'object' ? item : {};
       const clean = p.replace(/\\/g, '/').replace(/^\.?\//, '').trim();
       const resolution = await this.resolveWorkspaceFromPath(clean);
       if (!resolution) {
@@ -729,25 +737,34 @@ private _cachedTreeString: string | null = null;
     rootName: string = '',
     maxFilesInFolder: number = 30,
     mutedFiles: string[] = [],
-    isExport: boolean = false
+    isExport: boolean = false,
+    discussionIncludedFiles?: { path: string; state?: any }[]
   ): string {
     const lines: string[] = [];
+    const { arePathsEqual } = require('./utils');
 
     const getFileMetadata = (fileName: string, dirRelPath: string) => {
       const filePath = dirRelPath ? `${dirRelPath}/${fileName}` : fileName;
+      const namespacedPath = baseFolder ? `${baseFolder.name}/${filePath}` : filePath;
       const fileUri = vscode.Uri.joinPath(baseFolder.uri, filePath);
-      const fileState = this.contextStateProvider?.getStateForUri(fileUri);
+      let fileState = this.contextStateProvider?.getStateForUri(fileUri);
 
-      const isMuted = mutedFiles.some(m => {
-        const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
-        const cleanF = filePath.toLowerCase().trim();
-        return cleanM === cleanF || cleanM.endsWith('/' + cleanF) || cleanF.endsWith('/' + cleanM);
-      });
+      if (Array.isArray(discussionIncludedFiles)) {
+        const discEntry = discussionIncludedFiles.find(f => {
+          const fp = typeof f === 'string' ? f : f?.path;
+          return fp && (arePathsEqual(fp, filePath) || arePathsEqual(fp, namespacedPath));
+        });
+        if (discEntry && typeof discEntry === 'object' && discEntry.state) {
+          fileState = discEntry.state;
+        }
+      }
+
+      const isMuted = mutedFiles.some(m => arePathsEqual(m, filePath) || arePathsEqual(m, namespacedPath));
 
       let tag = '';
       if (isMuted) tag = isExport ? '' : '[M]';
       else if (fileState === 'included') tag = '[C]';
-      else if (fileState === 'definitions-only') tag = '[D]';
+      else if (fileState === 'definitions-only' || (fileState as string) === 'structure') tag = '[D]';
 
       return { fileName, filePath, tag, isActive: Boolean(tag) };
     };
@@ -859,8 +876,10 @@ private _cachedTreeString: string | null = null;
       capabilities?: any,
       onScanProgress?: (pct: number, status: string) => void
   ): Promise<string> {
-      const includedFiles = this.contextStateProvider ? this.contextStateProvider.getIncludedFiles() : [];
-      const includedHash = includedFiles.map(f => `${f.path}:${f.state}`).join('|');
+      const includedFiles = (capabilities?.includedFiles && Array.isArray(capabilities.includedFiles))
+          ? capabilities.includedFiles
+          : (this.contextStateProvider ? this.contextStateProvider.getIncludedFiles() : []);
+      const includedHash = includedFiles.map((f: any) => `${f.path}:${f.state}`).join('|');
       const normalizedMuted = (capabilities?.mutedFiles || [])
           .map((m: string) => m.replace(/\\/g, '/').toLowerCase().trim())
           .sort()
@@ -990,7 +1009,7 @@ private _cachedTreeString: string | null = null;
       const isMultiRoot = (vscode.workspace.workspaceFolders || []).length > 1;
       const mutedFilesList = capabilities?.mutedFiles || [];
       let treeString = '```text\n';
-      const renderedHierarchy = this.renderIndentedScopeHierarchy(projectTreeObj, folder, isMultiRoot ? folder.name : '', 30, mutedFilesList, isExport);
+      const renderedHierarchy = this.renderIndentedScopeHierarchy(projectTreeObj, folder, isMultiRoot ? folder.name : '', 30, mutedFilesList, isExport, includedFiles);
       treeString += (renderedHierarchy && renderedHierarchy.trim()) ? renderedHierarchy : `./: [workspace root]\n`;
       treeString += '\n```\n';
 
@@ -1055,7 +1074,7 @@ private _cachedTreeString: string | null = null;
         if (onProgress) onProgress(10);
         this._fileTreeObject = {};
 
-        const injectPath = (relPath: string, rootFolderName?: string) => {
+        const injectPath = (relPath: string, rootFolderName?: string): void => {
           if (!relPath || relPath.includes('Malformed Block') || relPath.includes('<<<<<<< SEARCH')) return;
           let normalizedPath = relPath.replace(/\\/g, '/');
           if (folders.length > 1 && rootFolderName && normalizedPath.startsWith(rootFolderName + '/')) {
@@ -1157,7 +1176,7 @@ private _cachedTreeString: string | null = null;
         const subTreeObj = isMultiRoot ? this._fileTreeObject[folder.name] : this._fileTreeObject;
         if (subTreeObj) {
           const mutedFilesList = capabilities?.mutedFiles || [];
-          const manifest = this.renderIndentedScopeHierarchy(subTreeObj, folder, isMultiRoot ? folder.name : '', 30, mutedFilesList, isExport);
+          const manifest = this.renderIndentedScopeHierarchy(subTreeObj, folder, isMultiRoot ? folder.name : '', 30, mutedFilesList, isExport, contextFiles);
           if (manifest.trim()) {
             treeString += manifest + '\n';
           }
@@ -1409,24 +1428,21 @@ private _cachedTreeString: string | null = null;
     }
 
     const activeFolders = vscode.workspace.workspaceFolders;
-    const contextFiles = (options?.includedFiles && Array.isArray(options.includedFiles) && options.includedFiles.length > 0)
+    const rawContextFiles = (options?.includedFiles !== undefined && Array.isArray(options.includedFiles))
       ? options.includedFiles
-      : (options?.capabilities?.includedFiles && Array.isArray(options.capabilities.includedFiles) && options.capabilities.includedFiles.length > 0)
+      : (options?.capabilities?.includedFiles !== undefined && Array.isArray(options.capabilities.includedFiles))
         ? options.capabilities.includedFiles
         : this.contextStateProvider.getIncludedFiles();
-    result.projectName = path.basename(activeFolders[0].uri.fsPath);
 
-    // Reconcile stale structure-only states: any file the live ContextStateProvider reports
-    // as 'included' (e.g. after an <unmute_files> on a [D] structure-only file) must render
-    // full content even when capabilities.includedFiles / mutedFiles still carry a stale snapshot.
-    const liveIncludedPaths = new Set<string>();
-    if (this.contextStateProvider && !options?.leanMode) {
-        for (const f of this.contextStateProvider.getIncludedFiles()) {
-            if (f.path && f.state === 'included') {
-                liveIncludedPaths.add(this.normalize(f.path).toLowerCase().replace(/^\.?\/+/, ''));
-            }
-        }
+    const { arePathsEqual: arePathsEqualCtx } = require('./utils');
+    const contextFiles: { path: string; state?: any; bytes?: number; tokens?: number }[] = [];
+    for (const cf of rawContextFiles) {
+      if (!cf || !cf.path) continue;
+      if (!contextFiles.some(existing => arePathsEqualCtx(existing.path, cf.path))) {
+        contextFiles.push(cf);
+      }
     }
+    result.projectName = path.basename(activeFolders[0].uri.fsPath);
 
     let useRLM = false;
     if (options?.allowRLM && options?.modelName) {
@@ -1457,7 +1473,12 @@ private _cachedTreeString: string | null = null;
     } else {
         result.text += `1. **Addressing**: Address files using their exact relative path from the workspace root (e.g. \`path/to/file.ext\`, exactly as shown in the tree below). Do NOT invent, assume, or prepend nonexistent root folders.\n`;
     }
-    result.text += `2. **Possessed Files (DO NOT RE-REQUEST)**: You already possess the complete source code for all **${contextFiles.length}** file(s) marked **\`[C]\`** under 'LOADED FILE CONTENTS'. Calling \`<add_files_to_context>\` or \`read_file\` for possessed files is STRICTLY FORBIDDEN and wastes context tokens.\n`;
+    const unmutedFullFilesCount = contextFiles.filter(f => {
+      const isM = mutedFiles.some((m: string) => arePathsEqualCtx(m, f.path));
+      const st = f.state || 'included';
+      return !isM && st !== 'definitions-only' && (st as string) !== 'structure';
+    }).length;
+    result.text += `2. **Possessed Files (DO NOT RE-REQUEST)**: You already possess the complete source code for all **${unmutedFullFilesCount}** file(s) marked **\`[C]\`** under 'LOADED FILE CONTENTS'. Calling \`<add_files_to_context>\` or \`read_file\` for possessed files is STRICTLY FORBIDDEN and wastes context tokens.\n`;
     if (!isExportContext) {
         result.text += `3. **Privilege Full Code via Unmute (<unmute_files>)**:
 - Calling \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` directly and completely transitions any file from either **Muted (\`[M]\`)** OR **Structure-Only (\`[D]\`)** to **Full Code (\`[C]\`)** — the structure block is fully replaced by the complete file source in one shot.
@@ -1636,19 +1657,25 @@ private _cachedTreeString: string | null = null;
 
       // Provide an unambiguous, flat manifest of all currently active files in this project
       const { arePathsEqual, isProjectFile } = require('./utils');
-      const activeProjectFiles = contextFiles.filter(f => {
-        const isMuted = mutedFiles.some(m => arePathsEqual(m, f.path));
-        return !isMuted;
-      });
+      const activeProjectFiles: typeof contextFiles = [];
+      for (const f of contextFiles) {
+        const isMuted = mutedFiles.some((m: string) => arePathsEqual(m, f.path));
+        if (isMuted) continue;
+        const res = await this.resolveWorkspaceFromPath(f.path);
+        if (!res || !res.folder || !areUrisEqual(res.folder.uri, folder.uri)) continue;
+        activeProjectFiles.push(f);
+      }
 
       const activeCodeFiles = activeProjectFiles.filter(f => isProjectFile(f.path));
       const activeExternalFiles = activeProjectFiles.filter(f => !isProjectFile(f.path));
 
       if (activeCodeFiles.length > 0) {
-        result.text += `### 📄 PROJECT CODE FILES MANIFEST [C] (${activeCodeFiles.length} files active):\n`;
+        result.text += `### 📄 PROJECT CODE FILES MANIFEST (${activeCodeFiles.length} file${activeCodeFiles.length === 1 ? '' : 's'} active):\n`;
         activeCodeFiles.forEach(f => {
           const headerPath = activeFolders.length > 1 ? `${folder.name}/${f.path}` : f.path;
-          result.text += `- \`${headerPath}\` [Project Code File]\n`;
+          const isStruct = f.state === 'definitions-only' || (f.state as string) === 'structure';
+          const badge = isStruct ? '[D] (Structure Only)' : '[C] (Full Content)';
+          result.text += `- \`${headerPath}\` ${badge}\n`;
         });
         result.text += `\n`;
       }
@@ -1708,13 +1735,7 @@ private _cachedTreeString: string | null = null;
         }
 
         const namespacedPath = fileEntry.path;
-        const cfKey = this.normalize(fileEntry.path).toLowerCase().replace(/^\.?\/+/, '');
-        const liveIncluded = liveIncludedPaths.has(cfKey);
-        // A structure-only [D] entry that the live provider now marks as 'included' (unmuted)
-        // must render as full content [C] — the structure block is fully replaced.
-        const contextState = (liveIncluded && (fileEntry.state === 'definitions-only' || fileEntry.state === 'structure'))
-          ? 'included'
-          : fileEntry.state;
+        const contextState = fileEntry.state || 'included';
         const fileUri = resolution.uri;
         const relativePath = resolution.relativePath;
 
@@ -1726,14 +1747,16 @@ private _cachedTreeString: string | null = null;
           const cacheKey = headerPath;
 
           // Stat check to ensure file exists and verify cache validity against disk metadata
-          const stat = await vscode.workspace.fs.stat(fileUri).catch(() => null);
+          let stat: vscode.FileStat | null = null;
+          try { stat = await vscode.workspace.fs.stat(fileUri); } catch { stat = null; }
           if (!stat || stat.type !== vscode.FileType.File) continue;
 
           const { arePathsEqual } = require('./utils');
-          const isMuted = mutedFiles.some((m: string) => arePathsEqual(m, relativePath) || arePathsEqual(m, headerPath));
+          const isMuted = mutedFiles.some((m: string) =>
+            arePathsEqual(m, relativePath) || arePathsEqual(m, headerPath) || arePathsEqual(m, fileEntry.path)
+          );
 
-          // If the live provider reports this file as 'included' (unmuted), trust the provider over a stale mute snapshot.
-          if (isMuted && !liveIncluded) {
+          if (isMuted) {
             continue;
           }
 
@@ -1890,7 +1913,8 @@ private _cachedTreeString: string | null = null;
         if (isMuted) continue;
 
         try {
-          const stat = await vscode.workspace.fs.stat(resolution.uri).catch(() => null);
+          let stat: vscode.FileStat | null = null;
+          try { stat = await vscode.workspace.fs.stat(resolution.uri); } catch { stat = null; }
           if (!stat || stat.type !== vscode.FileType.File) continue;
 
           const ext = path.extname(resolution.uri.fsPath).toLowerCase();
@@ -1978,8 +2002,136 @@ private _cachedTreeString: string | null = null;
   // FILE OPERATIONS
   // ─────────────────────────────────────────────────────────────
 
+  private async extractHtmlStructure(uri: vscode.Uri): Promise<{ definitions: string; symbols: FileSymbolInfo[] }> {
+    const bytes = await vscode.workspace.fs.readFile(uri);
+    const text = Buffer.from(bytes).toString('utf8');
+    const lines = text.split(/\r?\n/);
+
+    const defs: string[] = [];
+    const symbols: FileSymbolInfo[] = [];
+
+    const getLineAt = (offset: number): number => text.slice(0, offset).split(/\r?\n/).length;
+
+    // 1. External scripts & stylesheets
+    const extScripts = [...text.matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi)].map(m => m[1]);
+    const extStyles = [...text.matchAll(/<link\b[^>]*\bhref=["']([^"']+\.css[^"']*)["'][^>]*>/gi)].map(m => m[1]);
+    if (extScripts.length > 0) defs.push(`external_scripts: ${extScripts.join(', ')}`);
+    if (extStyles.length > 0) defs.push(`external_styles: ${extStyles.join(', ')}`);
+
+    // 2. Inline <style> blocks
+    const styleRe = /<style\b[^>]*>([\s\S]*?)<\/style>/gi;
+    let stMatch: RegExpExecArray | null;
+    let styleIdx = 0;
+    while ((stMatch = styleRe.exec(text)) !== null) {
+      styleIdx++;
+      const startLine = getLineAt(stMatch.index);
+      const endLine = getLineAt(stMatch.index + stMatch[0].length);
+      const name = styleIdx === 1 ? 'inline_style' : `inline_style_${styleIdx}`;
+      defs.push(`style ${name} (L${startLine}-L${endLine})`);
+      symbols.push({
+        name,
+        displayName: name,
+        kind: 'struct',
+        detail: `CSS <style> block`,
+        startLine,
+        endLine,
+        tokens: Math.max(1, Math.ceil(stMatch[0].length / 3.5))
+      });
+    }
+
+    // 3. Inline <script> blocks & embedded JS symbols
+    const scriptRe = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+    let scMatch: RegExpExecArray | null;
+    let scriptIdx = 0;
+    while ((scMatch = scriptRe.exec(text)) !== null) {
+      if (/\bsrc\s*=/i.test(scMatch[1] || '')) continue;
+      scriptIdx++;
+      const scriptStartLine = getLineAt(scMatch.index);
+      const scriptEndLine = getLineAt(scMatch.index + scMatch[0].length);
+      const bodyOffset = scMatch.index + scMatch[0].indexOf('>') + 1;
+      const bodyStartLine = getLineAt(bodyOffset);
+      const bodyLines = (scMatch[2] || '').split(/\r?\n/);
+
+      defs.push(`script_${scriptIdx} (L${scriptStartLine}-L${scriptEndLine}):`);
+
+      const jsSymbolsFound: FileSymbolInfo[] = [];
+      for (let i = 0; i < bodyLines.length; i++) {
+        const line = bodyLines[i];
+        const absLine = bodyStartLine + i;
+        const classM = line.match(/^\s*(?:export\s+)?class\s+([A-Za-z_$][\w$]*)/);
+        const fnM = line.match(/^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)\)/);
+        const arrowM = line.match(/^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/);
+        const methodM = line.match(/^\s{2,}(?:async\s+)?([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*\{/);
+
+        if (classM) {
+          jsSymbolsFound.push({ name: classM[1], displayName: classM[1], kind: 'class', startLine: absLine, endLine: absLine, tokens: 20 });
+          defs.push(`  class ${classM[1]} (L${absLine})`);
+        } else if (fnM) {
+          jsSymbolsFound.push({ name: fnM[1], displayName: fnM[1], kind: 'function', detail: `(${fnM[2]})`, startLine: absLine, endLine: absLine, tokens: 20 });
+          defs.push(`  function ${fnM[1]}(${fnM[2]}) (L${absLine})`);
+        } else if (arrowM) {
+          jsSymbolsFound.push({ name: arrowM[1], displayName: arrowM[1], kind: 'function', startLine: absLine, endLine: absLine, tokens: 15 });
+          defs.push(`  const ${arrowM[1]} = (...) => (L${absLine})`);
+        } else if (methodM && !['if', 'for', 'while', 'switch', 'catch'].includes(methodM[1])) {
+          jsSymbolsFound.push({ name: methodM[1], displayName: methodM[1], kind: 'method', detail: `(${methodM[2]})`, startLine: absLine, endLine: absLine, tokens: 15 });
+          defs.push(`  method ${methodM[1]}(${methodM[2]}) (L${absLine})`);
+        }
+      }
+
+      // Estimate endLine and token count for each discovered JS symbol
+      for (let j = 0; j < jsSymbolsFound.length; j++) {
+        const cur = jsSymbolsFound[j];
+        const nextStart = j + 1 < jsSymbolsFound.length ? jsSymbolsFound[j + 1].startLine - 1 : scriptEndLine;
+        cur.endLine = Math.max(cur.startLine, nextStart);
+        const sliceText = lines.slice(cur.startLine - 1, cur.endLine).join('\n');
+        cur.tokens = Math.max(1, Math.ceil(sliceText.length / 3.5));
+        symbols.push(cur);
+      }
+
+      if (jsSymbolsFound.length === 0) {
+        const scriptName = `inline_script_${scriptIdx}`;
+        symbols.push({
+          name: scriptName,
+          displayName: scriptName,
+          kind: 'function',
+          detail: 'Inline <script> block',
+          startLine: scriptStartLine,
+          endLine: scriptEndLine,
+          tokens: Math.max(1, Math.ceil(scMatch[0].length / 3.5))
+        });
+      }
+    }
+
+    // 4. Key HTML element IDs (compact)
+    const ids = Array.from(new Set([...text.matchAll(/\bid=["']([^"']+)["']/gi)].map(m => `#${m[1]}`))).slice(0, 40);
+    if (ids.length > 0) {
+      defs.push(`dom_ids: ${ids.join(', ')}`);
+    }
+
+    return {
+      definitions: defs.join('\n').trim() || '(No significant definitions found)',
+      symbols
+    };
+  }
+
   public async extractDefinitions(uri: vscode.Uri): Promise<string> {
     try {
+      const stat = await vscode.workspace.fs.stat(uri).catch(() => null);
+      const cacheKey = uri.fsPath;
+      if (stat) {
+        const cached = this._definitionsCache.get(cacheKey);
+        if (cached && cached.mtime === stat.mtime && cached.size === stat.size) {
+          return cached.definitions;
+        }
+      }
+      const ext = path.extname(uri.fsPath).toLowerCase();
+      if (ext === '.html' || ext === '.htm') {
+        const htmlRes = await this.extractHtmlStructure(uri);
+        if (stat) {
+          this._definitionsCache.set(cacheKey, { mtime: stat.mtime, size: stat.size, definitions: htmlRes.definitions });
+        }
+        return htmlRes.definitions;
+      }
       const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', uri);
       if (!symbols || symbols.length === 0) return "(No definitions found)";
 
@@ -2007,7 +2159,15 @@ private _cachedTreeString: string | null = null;
 
       let definitions = '';
       for (const symbol of symbols) definitions += formatSymbol(symbol);
-      return definitions.trim() || "(No significant definitions found)";
+      const result = definitions.trim() || "(No significant definitions found)";
+      if (stat) {
+        if (this._definitionsCache.size >= 100) {
+          const oldest = this._definitionsCache.keys().next().value;
+          if (oldest !== undefined) this._definitionsCache.delete(oldest);
+        }
+        this._definitionsCache.set(cacheKey, { mtime: stat.mtime, size: stat.size, definitions: result });
+      }
+      return result;
     } catch (e) {
       return `(Error extracting definitions: ${e})`;
     }
@@ -2015,6 +2175,11 @@ private _cachedTreeString: string | null = null;
 
   public async extractSymbolList(uri: vscode.Uri): Promise<FileSymbolInfo[]> {
     try {
+      const ext = path.extname(uri.fsPath).toLowerCase();
+      if (ext === '.html' || ext === '.htm') {
+        const htmlRes = await this.extractHtmlStructure(uri);
+        return htmlRes.symbols;
+      }
       const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', uri);
       if (!symbols || symbols.length === 0) return [];
 
@@ -2137,7 +2302,8 @@ private _cachedTreeString: string | null = null;
         if (!resolution) continue;
 
         const fullPath = resolution.uri;
-        const stat = await vscode.workspace.fs.stat(fullPath).catch(() => null);
+        let stat: vscode.FileStat | null = null;
+        try { stat = await vscode.workspace.fs.stat(fullPath); } catch { stat = null; }
         if (!stat || stat.type !== vscode.FileType.File) continue;
 
         const ext = path.extname(filePath).toLowerCase();
@@ -2715,7 +2881,7 @@ ${text.substring(0, 10000)}`;
     }
   ): Promise<GateEvaluationResult> {
     const gateCfg = ContextPoisoningGate.getConfig();
-    const caps = options?.capabilities;
+    const caps: any = options?.capabilities;
     const enabled = caps?.antiPromptInjection !== false && caps?.contextPoisoningGateEnabled !== false && gateCfg.enabled;
     const mode: PoisoningGateMode = (caps?.contextPoisoningGateMode as PoisoningGateMode) || gateCfg.mode;
     const useLlmAudit = caps?.contextPoisoningLlmAudit ?? gateCfg.useLlmAudit;
@@ -4038,8 +4204,8 @@ You have full access to zero-API-key research engines (prefer keyless providers 
     `:"";
     const fullContext = await this.getContextContent({ includeTree: true, modelName: model, signal });
 
-    const { PlanParser } = await import('./planParser');
-    const { ToolManager } = await import('./tools/toolManager');
+    const { PlanParser } = await import('./planParser.js');
+    const { ToolManager } = await import('./tools/toolManager.js');
 
     const activeToolManager = (this as any).toolManager || new ToolManager();
     const planParser = (this as any).agentManager?.planParser || new PlanParser(this.lollmsAPI, this, activeToolManager);

@@ -73,8 +73,9 @@ export class ChatPanel {
   public static activeAgents: Map<string, AgentManager> = new Map();
   // Static registry for standard chat generations
   public static activeGenerations: Map<string, ActiveGeneration> = new Map();
-  public static _tokenCountCache: Map<string, number> = new Map();
-  public static _contextSizeCache: Map<string, number> = new Map();
+  private static _tokenCountCache: Map<string, number> = new Map();
+  private static _contextSizeCache: Map<string, number> = new Map();
+  private static _globalSyncQueue: Promise<void> = Promise.resolve();
 
   public static currentPanel: ChatPanel | undefined;
   public static isBatchApplying = false;
@@ -293,7 +294,7 @@ export class ChatPanel {
         let fencedLocalIdx = options?.fencedBlockIndexOffset ?? 0;
 
         // 0. Process Mute, Unmute, and Granular Structure/Definitions Tags (unless already handled by the turn tool loop)
-        const isFastMode = this._discussionCapabilities.fastMode !== false;
+        const isFastMode = !(this._discussionCapabilities.useLibrarian === true && this._discussionCapabilities.contextGovernorEnabled !== false);
         const enableAutoFix = options?.autoFix !== undefined ? options.autoFix : (this._discussionCapabilities.autoFix !== false);
         const isSystemId = messageId.startsWith('self_correction') || messageId.startsWith('guardian') || messageId.startsWith('system') || messageId.startsWith('inspection');
 
@@ -1711,6 +1712,10 @@ If you need to modify files, privilege using <unmute_files> to recover full cont
         (normalizedPartial as any).autoMode = true;
     }
     this._discussionCapabilities = { ...this._discussionCapabilities, ...normalizedPartial };
+    if (partial.mutedFiles !== undefined && this._currentDiscussion) {
+        this._currentDiscussion.mutedFiles = [...partial.mutedFiles];
+        this._discussionCapabilities.mutedFiles = [...partial.mutedFiles];
+    }
 
     // --- GLOBAL WORKSPACE SYNC ---
     if (partial.folderSettings !== undefined) {
@@ -1904,7 +1909,7 @@ If you need to modify files, privilege using <unmute_files> to recover full cont
                           ...this._discussionCapabilities, 
                           agentMode: false, 
                           preciseTokenization, 
-                          fastMode: this._discussionCapabilities.fastMode !== false,
+                          useLibrarian: this._discussionCapabilities.useLibrarian === true,
                           mutedFiles: [...inheritedMuted],
                           includedFiles: JSON.parse(JSON.stringify(globalIncluded))
                       } as any, 
@@ -1950,15 +1955,6 @@ If you need to modify files, privilege using <unmute_files> to recover full cont
                   if (!discussion.mutedFiles) {
                       discussion.mutedFiles = [];
                   }
-
-                  // Capture isolated copy of includedFiles if not yet assigned
-                  if (!(discussion as any).includedFiles) {
-                      const globalIncluded = this._contextManager?.getContextStateProvider()?.getIncludedFiles() || [];
-                      (discussion as any).includedFiles = JSON.parse(JSON.stringify(globalIncluded));
-                      if (discussion.capabilities) {
-                          (discussion.capabilities as any).includedFiles = JSON.parse(JSON.stringify(globalIncluded));
-                      }
-                  }
                   if (!discussion.mutedTools) {
                       discussion.mutedTools = [];
                   }
@@ -1992,6 +1988,28 @@ If you need to modify files, privilege using <unmute_files> to recover full cont
                   vscode.window.showErrorMessage(`Lollms: Could not load discussion ${this.discussionId}. It may have been deleted.`);
                   this.dispose();
                   return;
+              }
+          }
+
+          if (this._currentDiscussion) {
+              if (!Array.isArray(this._currentDiscussion.mutedFiles)) {
+                  this._currentDiscussion.mutedFiles = Array.isArray(this._discussionCapabilities?.mutedFiles)
+                      ? [...this._discussionCapabilities.mutedFiles]
+                      : [];
+              }
+              this._discussionCapabilities.mutedFiles = [...this._currentDiscussion.mutedFiles];
+
+              const globalIncluded = this._contextManager?.getContextStateProvider()?.getIncludedFiles() || [];
+              if (!(this._currentDiscussion as any).includedFiles) {
+                  (this._currentDiscussion as any).includedFiles = JSON.parse(JSON.stringify(globalIncluded));
+              } else {
+                  (this._currentDiscussion as any).includedFiles = this.reconcileDiscussionFiles(
+                      globalIncluded,
+                      (this._currentDiscussion as any).includedFiles
+                  );
+              }
+              if (this._discussionCapabilities) {
+                  (this._discussionCapabilities as any).includedFiles = (this._currentDiscussion as any).includedFiles;
               }
           }
 
@@ -2114,7 +2132,11 @@ If you need to modify files, privilege using <unmute_files> to recover full cont
                 try {
                     const provider = this._contextManager.getContextStateProvider();
                     const rawFiles = provider ? provider.getIncludedFiles() : [];
-                    const filesWithWeights = await Promise.all(rawFiles.filter(f => f && f.path).map(async f => {
+                    const reconciledLoadFiles = this.reconcileDiscussionFiles(
+                        rawFiles,
+                        (this._currentDiscussion as any)?.includedFiles
+                    );
+                    const filesWithWeights = await Promise.all(reconciledLoadFiles.map(async f => {
                         let bytes = f.bytes || 0;
                         let tokens = f.tokens || 0;
                         let mtime = f.mtime || 0;
@@ -2151,6 +2173,10 @@ If you need to modify files, privilege using <unmute_files> to recover full cont
 
                 const { getAvailableContextSelections } = require('../contextCommands');
                 const savedSelections = (await getAvailableContextSelections()).map((s: any) => s.fileName);
+                let workspaceFiles: string[] = [];
+                try {
+                    workspaceFiles = await this._contextManager.getWorkspaceFilePaths();
+                } catch {}
 
                 if (cachedContext) {
                     const contextTextToSend = cachedContext.text.length > UI_PREVIEW_LIMIT 
@@ -2179,6 +2205,7 @@ If you need to modify files, privilege using <unmute_files> to recover full cont
                         mutedDiagrams: this._currentDiscussion?.mutedDiagrams || [],
                         briefing: this._contextManager.renderBriefing(this._currentDiscussion),
                         selections: savedSelections,
+                        workspaceFiles,
                         governorReport: cachedContext.governorReport || await this._contextManager.getStructureGuide()
                     });
                     this._panel.webview.postMessage({ command: 'updateImageContext', images: cachedContext.images });
@@ -2191,7 +2218,8 @@ If you need to modify files, privilege using <unmute_files> to recover full cont
                         diagrams: (this._currentDiscussion?.activeDiagrams || []).map(type => ({ type, mermaid: '' })),
                         mutedFiles: this._currentDiscussion?.mutedFiles || [],
                         briefing: this._currentDiscussion?.discussion_data_zone || "",
-                        selections: savedSelections
+                        selections: savedSelections,
+                        workspaceFiles
                     });
                 }
 
@@ -2574,11 +2602,76 @@ If you need to modify files, privilege using <unmute_files> to recover full cont
 
 
 
+private normalizePathKey(p: string): string {
+    let clean = String(p || '').replace(/\\/g, '/').trim().replace(/^\.?\/+/, '');
+    const folders = vscode.workspace.workspaceFolders || [];
+    if (folders.length > 1) {
+        for (const f of folders) {
+            const prefix = f.name.toLowerCase() + '/';
+            if (clean.toLowerCase().startsWith(prefix)) {
+                clean = clean.slice(prefix.length);
+                break;
+            }
+        }
+    }
+    return process.platform === 'win32' ? clean.toLowerCase() : clean;
+}
+
+private reconcileDiscussionFiles(
+    providerFiles: { path: string; state?: any; bytes?: number; tokens?: number; mtime?: number }[],
+    discFiles?: any[]
+): { path: string; state: any; bytes: number; tokens: number; mtime?: number; symbols?: string[] }[] {
+    const resultMap = new Map<string, any>();
+
+    for (const pf of (providerFiles || [])) {
+        if (!pf || !pf.path) continue;
+        const key = this.normalizePathKey(pf.path);
+        if (!resultMap.has(key)) {
+            resultMap.set(key, {
+                path: pf.path.replace(/\\/g, '/').trim(),
+                state: pf.state || 'included',
+                bytes: pf.bytes || 0,
+                tokens: pf.tokens || 0,
+                mtime: pf.mtime || 0
+            });
+        }
+    }
+
+    if (Array.isArray(discFiles)) {
+        for (const df of discFiles) {
+            const dPath = typeof df === 'string' ? df : df?.path;
+            if (!dPath) continue;
+            const key = this.normalizePathKey(dPath);
+            const dState = (typeof df === 'object' && df?.state) ? df.state : 'included';
+            const dSymbols = (typeof df === 'object' && Array.isArray(df?.symbols)) ? [...df.symbols] : undefined;
+
+            if (resultMap.has(key)) {
+                const existing = resultMap.get(key)!;
+                existing.state = dState;
+                if (dSymbols) existing.symbols = dSymbols;
+            } else {
+                resultMap.set(key, {
+                    path: dPath.replace(/\\/g, '/').trim(),
+                    state: dState,
+                    bytes: (typeof df === 'object' ? df.bytes : 0) || 0,
+                    tokens: (typeof df === 'object' ? df.tokens : 0) || 0,
+                    mtime: (typeof df === 'object' ? df.mtime : 0) || 0,
+                    ...(dSymbols ? { symbols: dSymbols } : {})
+                });
+            }
+        }
+    }
+
+    return Array.from(resultMap.values());
+}
+
 public async addFilesToDiscussionContext(paths: string[], state: any = 'included'): Promise<string[]> {
     if (!this._currentDiscussion || !paths || paths.length === 0) return [];
+    const globalIncluded = this._contextManager?.getContextStateProvider()?.getIncludedFiles() || [];
     if (!(this._currentDiscussion as any).includedFiles) {
-        const globalIncluded = this._contextManager?.getContextStateProvider()?.getIncludedFiles() || [];
         (this._currentDiscussion as any).includedFiles = JSON.parse(JSON.stringify(globalIncluded));
+    } else {
+        (this._currentDiscussion as any).includedFiles = this.reconcileDiscussionFiles([], (this._currentDiscussion as any).includedFiles);
     }
     const discFiles: any[] = (this._currentDiscussion as any).includedFiles;
     const added: string[] = [];
@@ -2586,10 +2679,10 @@ public async addFilesToDiscussionContext(paths: string[], state: any = 'included
     for (const p of paths) {
         const cleanP = p.replace(/\\/g, '/').trim();
         if (!cleanP) continue;
-        const { arePathsEqual } = require('../../utils');
+        const targetKey = this.normalizePathKey(cleanP);
         const existing = discFiles.find(f => {
             const cf = typeof f === 'string' ? f : (f.path || '');
-            return arePathsEqual(cf, cleanP);
+            return this.normalizePathKey(cf) === targetKey;
         });
         if (!existing) {
             discFiles.push({ path: cleanP, state });
@@ -2618,13 +2711,13 @@ public async removeFilesFromDiscussionContext(paths: string[]): Promise<string[]
     if (!this._currentDiscussion || !paths || paths.length === 0) return [];
     if (!(this._currentDiscussion as any).includedFiles) return [];
 
-    const targetPaths = paths.map(p => p.replace(/\\/g, '/').toLowerCase().trim());
+    const targetKeys = new Set(paths.map(p => this.normalizePathKey(p)));
     const discFiles: any[] = (this._currentDiscussion as any).includedFiles;
     const removed: string[] = [];
 
     (this._currentDiscussion as any).includedFiles = discFiles.filter(f => {
-        const cf = (typeof f === 'string' ? f : f.path || '').replace(/\\/g, '/').toLowerCase();
-        const matches = targetPaths.some(t => cf === t || cf.endsWith('/' + t) || t.endsWith('/' + cf));
+        const cf = typeof f === 'string' ? f : f.path || '';
+        const matches = targetKeys.has(this.normalizePathKey(cf));
         if (matches) removed.push(cf);
         return !matches;
     });
@@ -2640,20 +2733,19 @@ public async removeFilesFromDiscussionContext(paths: string[]): Promise<string[]
 
 public async commitDiscussionFilesToGlobal(): Promise<void> {
     if (!this._currentDiscussion || !this._contextManager) return;
-    const discFiles: any[] = (this._currentDiscussion as any).includedFiles || [];
-    const discMuted = this._currentDiscussion.mutedFiles || [];
+    const discFiles: any[] = JSON.parse(JSON.stringify((this._currentDiscussion as any).includedFiles || []));
+    const discMuted = [...(this._currentDiscussion.mutedFiles || [])];
 
-    if (discFiles.length > 0) {
+    ChatPanel._globalSyncQueue = ChatPanel._globalSyncQueue.then(async () => {
         const provider = this._contextManager.getContextStateProvider();
-        if (provider) {
+        if (provider && discFiles.length > 0) {
             const pathsToAdd = discFiles.map(f => typeof f === 'string' ? f : f.path).filter(Boolean);
             await provider.addFilesToContext(pathsToAdd);
         }
-    }
-
-    if (Array.isArray(discMuted)) {
         await this._discussionManager.saveLastMutedFiles(discMuted);
-    }
+    }).catch(() => {});
+
+    return ChatPanel._globalSyncQueue;
 }
 
   public async updateContextAndTokens(options?: { isBackgroundSync?: boolean, forceFullScan?: boolean }): Promise<void> {
@@ -2720,46 +2812,23 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
 
                 // --- IMMEDIATE INSTANT HYDRATION / REACTION ---
                 const provider = self._contextManager.getContextStateProvider();
-                const rawIncluded = provider ? provider.getIncludedFiles().filter(f => f && f.path) : [];
+                const providerIncluded = provider ? provider.getIncludedFiles().filter(f => f && f.path) : [];
 
-                // Reconcile discussion includedFiles with latest provider files and preserve definitions-only structure states
-                if (provider && self._currentDiscussion) {
-                    const { arePathsEqual } = require('../../utils');
-                    if (!(self._currentDiscussion as any).includedFiles) {
-                        (self._currentDiscussion as any).includedFiles = JSON.parse(JSON.stringify(rawIncluded));
-                    } else {
-                        const discFiles: any[] = (self._currentDiscussion as any).includedFiles;
-                        for (const gf of rawIncluded) {
-                            const match = discFiles.find(f => {
-                                const cf = typeof f === 'string' ? f : (f.path || '');
-                                return arePathsEqual(cf, gf.path);
-                            });
-                            if (!match) {
-                                discFiles.push(JSON.parse(JSON.stringify(gf)));
-                            } else if (typeof match === 'object' && match.state) {
-                                gf.state = match.state;
-                            }
-                        }
-                        for (const df of discFiles) {
-                            const dPath = typeof df === 'string' ? df : df.path;
-                            const dState = typeof df === 'object' ? df.state : 'included';
-                            const inRaw = rawIncluded.find(rf => arePathsEqual(rf.path, dPath));
-                            if (inRaw) {
-                                inRaw.state = dState;
-                            } else if (dPath) {
-                                rawIncluded.push({ path: dPath, state: dState, bytes: 0, tokens: 0 });
-                            }
-                        }
-                    }
+                // Reconcile discussion includedFiles with latest provider files and preserve definitions-only structure states without duplicates
+                let reconciledFiles = providerIncluded;
+                if (self._currentDiscussion) {
+                    reconciledFiles = self.reconcileDiscussionFiles(providerIncluded, (self._currentDiscussion as any).includedFiles);
+                    (self._currentDiscussion as any).includedFiles = JSON.parse(JSON.stringify(reconciledFiles));
                     if (self._discussionCapabilities) {
                         (self._discussionCapabilities as any).includedFiles = (self._currentDiscussion as any).includedFiles;
+                        self._discussionCapabilities.mutedFiles = [...(self._currentDiscussion.mutedFiles || [])];
                     }
                 }
 
-                if (!isBackground) {
+                if (forceFull) {
                     self._panel.webview.postMessage({ 
                         command: 'updateContext', 
-                        files: rawIncluded,
+                        files: reconciledFiles,
                         mutedFiles: self._currentDiscussion?.mutedFiles || [],
                         mutedTools: self._currentDiscussion?.mutedTools || [],
                         mutedSkills: self._currentDiscussion?.mutedSkills || [],
@@ -2897,20 +2966,11 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
                         const savedSelections = (await getAvailableContextSelections()).map((s: any) => s.fileName);
 
                         // --- LAZY INGESTION & DELTA STATE CACHE ---
-                        const provider = self._contextManager.getContextStateProvider();
-                        const rawIncluded = provider ? provider.getIncludedFiles() : [];
-                        const discFiles: any[] = (self._currentDiscussion as any)?.includedFiles || [];
-                        const { arePathsEqual } = require('../../utils');
-
-                        const includedFiles = await Promise.all(rawIncluded.filter(f => f && f.path).map(async f => {
+                        const includedFiles = await Promise.all(reconciledFiles.map(async f => {
                             let bytes = f.bytes || 0;
                             let tokens = f.tokens || 0;
                             let mtime = f.mtime || 0;
-                            const match = discFiles.find(df => {
-                                const cf = typeof df === 'string' ? df : (df.path || '');
-                                return arePathsEqual(cf, f.path);
-                            });
-                            const effectiveState = (match && typeof match === 'object' && match.state) ? match.state : f.state;
+                            const effectiveState = f.state || 'included';
 
                             const cached = (self._contextManager as any)._fileContentCache?.get(f.path);
                             if (cached?.content) {
@@ -2951,10 +3011,15 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
                             .map(t => ({ name: t.name, description: t.description }));
 
                         const govReport = context.governorReport || await self._contextManager.getStructureGuide();
+                        let workspaceFiles: string[] = [];
+                        try {
+                            workspaceFiles = await self._contextManager.getWorkspaceFilePaths();
+                        } catch {}
                         self._panel.webview.postMessage({ 
                             command: 'updateContextDelta', 
                             action: 'sync_all',
                             files: includedFiles,
+                            workspaceFiles,
                             projectTree: context.projectTree || '',
                             skills: (currentSkills || []).map(s => ({ id: s.id, name: s.name, description: s.description })),
                             tools: equippedTools || [],
@@ -3404,7 +3469,7 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
                 self._panel.webview.postMessage({ command: 'hideProjectLoader' });
                 resolvePromise();
             }
-        }, 100); // 100ms responsive debouncing interval
+        }, 180); // 180ms debouncing interval to coalesce rapid mute/structure clicks
     });
   }
     /**
@@ -3455,11 +3520,16 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
           const provider = this._contextManager?.getContextStateProvider();
           const activeFiles = provider ? provider.getIncludedFiles() : [];
           const activeMuted = this._currentDiscussion?.mutedFiles ?? this._discussionManager.getLastMutedFiles();
+          let workspaceFiles: string[] = [];
+          try {
+              workspaceFiles = await this._contextManager.getWorkspaceFilePaths();
+          } catch {}
           this._panel.webview.postMessage({
               command: 'openNewDiscussionWizard',
               selections: savedSelections || [],
               files: activeFiles,
-              mutedFiles: activeMuted
+              mutedFiles: activeMuted,
+              workspaceFiles
           });
           this._shouldOpenWizardOnLoad = false;
       }
@@ -4664,6 +4734,7 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
     const personaContent = currentP?.systemPrompt || "";
     const personaName = currentP?.name || "Lollms";
 
+    const generationStartTime = Date.now();
     const proc = this.processManager.register(this.discussionId, 'Lollms: Preparing workspace context...');
     const processId = proc.id;
     let controller = proc.controller;
@@ -4711,8 +4782,8 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
 
     await this.addMessageToDiscussion(userMessage);
 
-    const isFastModeEarly = this._discussionCapabilities.fastMode !== false;
-    this.processManager.updateDescription(processId, isFastModeEarly ? "Coding..." : "Preparing workspace context...");
+    const useLibrarianEarly = this._discussionCapabilities.useLibrarian === true && this._discussionCapabilities.contextGovernorEnabled !== false;
+    this.processManager.updateDescription(processId, !useLibrarianEarly ? "Coding..." : "Preparing workspace context...");
     this.updateGeneratingState();
 
     // Auto-title discussion on the first user prompt if untitled
@@ -4994,9 +5065,9 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
             ? lastAssistantMsg.content 
             : (Array.isArray(lastAssistantMsg?.content) ? lastAssistantMsg.content.map((p: any) => p.text || '').join('\n') : '');
 
-        const isFastModePre = this._discussionCapabilities.fastMode !== false;
+        const useLibrarianPre = this._discussionCapabilities.useLibrarian === true && this._discussionCapabilities.contextGovernorEnabled !== false;
 
-        const lastAssistantHadPlan = !isFastModePre && (
+        const lastAssistantHadPlan = useLibrarianPre && (
             lastAssistantContent.includes('<librarian_off>') ||
             lastAssistantContent.toLowerCase().includes('stage 2') ||
             lastAssistantContent.toLowerCase().includes('phase 2') ||
@@ -5005,7 +5076,7 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
         );
 
         const isFormSubmission = typeof rawUserPromptText === 'string' && rawUserPromptText.startsWith('FORM_SUBMISSION:');
-        const isPlanConfirmation = !isFastModePre && isConfirmationText && lastAssistantHadPlan;
+        const isPlanConfirmation = useLibrarianPre && isConfirmationText && lastAssistantHadPlan;
 
         // ── UNIFIED SINGLE ASSISTANT MESSAGE INITIALIZATION ──
         // Everything for this turn (Librarian directive + Coder implementation) lives in this ONE message!
@@ -5029,18 +5100,18 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
 
         await this.addMessageToDiscussion(initialAssistantMessage, true);
 
-        // ── STEP 1: FAST MODE vs. LIBRARIAN MASTER ARCHITECTURAL DIRECTIVE ──
-        const isFastMode = this._discussionCapabilities.fastMode !== false;
+        // ── STEP 1: LIBRARIAN MASTER ARCHITECTURAL DIRECTIVE (CONTROLLED BY AUTOMATION TOGGLE) ──
+        const useLibrarian = this._discussionCapabilities.useLibrarian === true && this._discussionCapabilities.contextGovernorEnabled !== false;
+        const isFastMode = !useLibrarian;
         const isMultiPartCont = !!(message as any).isMultiPartContinuation || !!userMessage.isMultiPartContinuation;
 
         const isGreetingOnly = /^(?:hi|hello|hey|greetings|good\s+(?:morning|afternoon|evening)|thanks|thank\s+you)\b/i.test(rawUserPromptText.trim()) && rawUserPromptText.trim().split(/\s+/).length <= 4;
 
-        // In Standard Mode (!isFastMode), run the 3-phase workflow:
+        // When Librarian is enabled via automation toggles, run the 3-phase workflow:
         // Phase 0: Fast inspection of current context
         // If sufficient: Call Coder directly as if there were no librarian
         // Else: Free context files (mute all), Phase 1 scouting, Phase 2 understanding, Phase 3 planning
-        const shouldRunMasterLibrarian = !isFastMode &&
-            this._discussionCapabilities.contextGovernorEnabled !== false &&
+        const shouldRunMasterLibrarian = useLibrarian &&
             !isPlanConfirmation && 
             !isFormSubmission &&
             !isMultiPartCont && 
@@ -5303,6 +5374,12 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
         const mutedFiles = this._currentDiscussion.mutedFiles || [];
         const mutedSkills = this._currentDiscussion.mutedSkills || [];
         const mutedDiagrams = this._currentDiscussion.mutedDiagrams || [];
+        const providerForSend = this._contextManager.getContextStateProvider();
+        const rawProviderFiles = providerForSend ? providerForSend.getIncludedFiles().filter(f => f && f.path) : [];
+        const reconciledForSend = this.reconcileDiscussionFiles(rawProviderFiles, (this._currentDiscussion as any)?.includedFiles);
+        (this._currentDiscussion as any).includedFiles = JSON.parse(JSON.stringify(reconciledForSend));
+        this._discussionCapabilities.mutedFiles = [...mutedFiles];
+        (this._discussionCapabilities as any).includedFiles = (this._currentDiscussion as any).includedFiles;
 
         let contextData = await this._contextManager.getContextContent({
             importedSkillIds: importedIds,
@@ -5310,6 +5387,7 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
             leanMode: false,
             discussionId: this.discussionId,
             mutedFiles: mutedFiles,
+            includedFiles: reconciledForSend,
             mutedSkills: mutedSkills,
             mutedDiagrams: mutedDiagrams,
             modelName: targetModel,
@@ -5334,22 +5412,6 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
         history = budgetOptimization.history;
 
         const isAssistantMode = !this._discussionCapabilities.agentMode && !this._discussionCapabilities.dynamicMode;
-
-        const baseInstructions = await getProcessedSystemPrompt(
-            'chat', 
-            this._discussionCapabilities, 
-            personaContent, 
-            undefined, 
-            forceFullCode, 
-            { 
-                tree: contextData.projectTree, 
-                files: contextData.selectedFilesContent, 
-                skills: contextData.skillsContent,
-                memory: projectMemory,
-                projectName: contextData.projectName,
-                toolManager: isAssistantMode ? undefined : this.agentManager?.['toolManager']
-            } as any
-        );
 
         const thinkTimings: Array<{ start: number; end?: number }> = [];
         let firstTokenTimestamp: number | undefined;
@@ -5525,8 +5587,9 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
             budgetOptimization.cutFiles.forEach(cf => cutByCompressionFiles.add(cf));
         }
 
+        const isLibrarianInactive = isFastMode || this._discussionCapabilities.contextGovernorEnabled === false;
         const buildLoopMessages = (activeContextData: ContextResult, isLeanStage1: boolean = false): ChatMessage[] => {
-            const knowledgeText = isFastMode ? "" : (activeContextData.governorReport || "");
+            const knowledgeText = isLibrarianInactive ? "" : (activeContextData.governorReport || "");
             const missionBriefingText = this._contextManager.renderBriefing(this._currentDiscussion);
             const leanNotice = isLeanStage1 ? `
 > ⚡ **STAGE 1 STRIPPED SIGNATURES NOTICE**:
@@ -5598,7 +5661,7 @@ The user has CONFIRMED and VALIDATED your plan.
                 content: userContentPayload
             };
 
-            const cleanHistory = isFastMode
+            const cleanHistory = isLibrarianInactive
                 ? history.filter(m => {
                     if (m.skipInPrompt) return false;
                     const pName = (m.personalityName || '').toLowerCase();
@@ -5623,7 +5686,7 @@ The user has CONFIRMED and VALIDATED your plan.
                 : history.filter(m => !m.skipInPrompt);
 
             const rawMsgs: ChatMessage[] = [
-                { role: 'system', content: baseInstructions },
+                { role: 'system', content: '' },
                 ...cleanHistory,
                 updatedUserMessage
             ];
@@ -5735,6 +5798,7 @@ The user has CONFIRMED and VALIDATED your plan.
 
             let turnResponse = "";
             let turnEndedByTag = false;
+            let detectedEndTagStr = "";
             const turnStreamController = new AbortController();
             const onParentAbort = () => turnStreamController.abort();
             if (controller.signal.aborted) {
@@ -5759,6 +5823,7 @@ The user has CONFIRMED and VALIDATED your plan.
                         const endMatch = findExplicitEndTag(turnResponse);
                         if (endMatch) {
                             turnEndedByTag = true;
+                            detectedEndTagStr = endMatch.tag;
                             const acceptedChunk = turnResponse.slice(prevLen, endMatch.endIndex);
                             turnResponse = turnResponse.slice(0, endMatch.endIndex);
                             currentFullResponseBuffer = bufferBeforeTurn + turnResponse;
@@ -6039,7 +6104,7 @@ The user has CONFIRMED and VALIDATED your plan.
                         const failedDesc = pipeRes.failedPatches.length > 0
                             ? ` Failed patches: ${pipeRes.failedPatches.map(fp => `${fp.filePath} (${fp.error})`).join('; ')}.`
                             : '';
-                        turnPatchReport = `✅ **Patches Applied (${pipeRes.appliedCount})**: [${pipeRes.modifiedFiles.join(', ')}] saved on disk.${failedDesc}\n`;
+                        turnPatchReport = `✅ **Patches Applied (${pipeRes.appliedCount})**: [${pipeRes.modifiedFiles.join(', ')}] saved on disk and refreshed in your \`LOADED FILE CONTENTS\` context (including symbol updates). You do not need to run a script to verify the patch text.${failedDesc}\n`;
                     }
                 }
             } else if (turnHasFileUpdates && !shouldAutoApplyTurn) {
@@ -6049,9 +6114,14 @@ The user has CONFIRMED and VALIDATED your plan.
             // Stop Cause 4: Explicit end tag emitted -> stop immediately without continuing tool/re-prompt loops
             if (turnEndTagged) {
                 endedByTagInTurn = true;
-                roundEntry.notes.push('Completed with explicit end tag');
-                this.log(`[Auto Mode] Explicit end tag detected: stopping immediately.`, 'INFO');
+                const finalEndTagStr = detectedEndTagStr || endTagMatchAfterRepair?.tag || '</end>';
+                roundEntry.notes.push(`Completed with explicit end tag (${finalEndTagStr})`);
+                this.log(`[Auto Mode] Explicit end tag (${finalEndTagStr}) detected: stopping immediately.`, 'INFO');
                 forceFinalAnswerNoTools = true;
+                const safeTag = finalEndTagStr.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                const endBadgeHtml = `\n\n<div class="end-tag-indicator" style="display:inline-flex; align-items:center; gap:6px; margin-top:8px; padding:3px 10px; border-radius:12px; font-size:10.5px; font-weight:600; background:rgba(46, 204, 113, 0.12); border:1px solid rgba(46, 204, 113, 0.35); color:var(--vscode-charts-green);"><i class="codicon codicon-pass-filled"></i> <span>Explicit end tag received (<code>${safeTag}</code>)</span></div>\n`;
+                currentFullResponseBuffer += endBadgeHtml;
+                fullResponse = currentFullResponseBuffer;
                 await finalizeAndSaveTurn(currentFullResponseBuffer);
                 return;
             }
@@ -6116,7 +6186,11 @@ The user has CONFIRMED and VALIDATED your plan.
                             const filesToAdd = Array.from(new Set([...attrFiles, ...bodyFiles]));
                             if (filesToAdd.length > 0) {
                                 const provider = this._contextManager.getContextStateProvider();
-                                const currentInc = provider ? provider.getIncludedFiles().map(fi => (typeof fi === 'string' ? fi : fi.path || '').replace(/\\/g, '/').toLowerCase()) : [];
+                                const rawInc = provider ? provider.getIncludedFiles() : [];
+                                const reconciledInc = this.reconcileDiscussionFiles(rawInc, (this._currentDiscussion as any)?.includedFiles);
+                                const currentInc = reconciledInc
+                                    .filter(fi => fi && fi.path && fi.state !== 'definitions-only' && (fi.state as string) !== 'structure')
+                                    .map(fi => fi.path.replace(/\\/g, '/').toLowerCase());
                                 const currentMuted = (this._currentDiscussion?.mutedFiles || []).map(m => m.replace(/\\/g, '/').toLowerCase());
 
                                 const { arePathsEqual: arePathsEqualTurn } = require('../../utils');
@@ -6650,16 +6724,49 @@ The user has CONFIRMED and VALIDATED your plan.
                                     isSuccess = false;
                                     completedDynamicActions.push(`Blocked unsafe ${lang} execution: ${denyReason}`);
                                 } else {
-                                    if (validation.decision === 'confirm') {
-                                        const choice = await vscode.window.showWarningMessage(
-                                            `🛡️ Confirm <execute_code lang="${lang}">: ${denyReason}`,
-                                            { modal: true },
-                                            'Allow Once',
-                                            'Block'
-                                        );
-                                        executionPermitted = choice === 'Allow Once';
-                                        if (!executionPermitted) {
-                                            toolResult = `🛑 SECURITY BLOCK: Execution cancelled by user (${denyReason}).`;
+                                    if (validation.decision === 'confirm' && !(this._currentDiscussion as any)?.allowAllExecuteCodeForDiscussion) {
+                                        const safeReason = String(denyReason || 'Requires user confirmation').replace(/"/g, '&quot;');
+                                        const confirmPrompt = `### 🛡️ Security Confirmation Required (\`<execute_code lang="${lang}">\`)
+**Reason:** ${denyReason}
+
+${this.wrapInSafeCodeFence(codeBody, lang)}
+
+<lollms_form title="Approve Code Execution" id="exec_confirm_${Date.now()}">
+  <radio name="decision" label="Choose how to proceed:" required="true">
+    <option value="allow_once">✅ Accept Once (Run this script)</option>
+    <option value="allow_discussion">🔓 Accept for Whole Discussion (Auto-approve future scripts)</option>
+    <option value="refuse">🛑 Refuse / Block</option>
+  </radio>
+</lollms_form>
+
+`;
+                                        let decisionVal = 'refuse';
+                                        try {
+                                            const rawDecision = await this.requestUserInput(confirmPrompt, controller.signal);
+                                            if (rawDecision && rawDecision.startsWith('FORM_SUBMISSION:')) {
+                                                const parsed = JSON.parse(rawDecision.substring(16).trim());
+                                                const d = String(parsed.decision || '').toLowerCase();
+                                                if (d.includes('allow_discussion') || d.includes('whole discussion')) decisionVal = 'allow_discussion';
+                                                else if (d.includes('allow_once') || d.includes('accept once')) decisionVal = 'allow_once';
+                                            } else if (rawDecision && /allow_discussion|whole discussion/i.test(rawDecision)) {
+                                                decisionVal = 'allow_discussion';
+                                            } else if (rawDecision && /allow_once|accept once/i.test(rawDecision)) {
+                                                decisionVal = 'allow_once';
+                                            }
+                                        } catch {
+                                            decisionVal = 'refuse';
+                                        }
+
+                                        if (decisionVal === 'allow_discussion') {
+                                            if (this._currentDiscussion) {
+                                                (this._currentDiscussion as any).allowAllExecuteCodeForDiscussion = true;
+                                            }
+                                            executionPermitted = true;
+                                        } else if (decisionVal === 'allow_once') {
+                                            executionPermitted = true;
+                                        } else {
+                                            executionPermitted = false;
+                                            toolResult = `🛑 SECURITY BLOCK: Execution cancelled by user (${safeReason}).`;
                                             isSuccess = false;
                                             completedDynamicActions.push(`User blocked ${lang} execution.`);
                                         }
@@ -6753,9 +6860,14 @@ The user has CONFIRMED and VALIDATED your plan.
                             } else {
                                 try {
                                     parsedCall = JSON.parse(rawJson);
-                                } catch (e) {
-                                    const repaired = rawJson.replace(/\\`/g, '`').replace(/[\r\n\t]/g, ' ').replace(/,\s*([\]}])/g, '$1');
-                                    parsedCall = JSON.parse(repaired);
+                                } catch (e: any) {
+                                    try {
+                                        const repaired = rawJson.replace(/\\`/g, '`').replace(/[\r\n\t]/g, ' ').replace(/,\s*([\]}])/g, '$1');
+                                        parsedCall = JSON.parse(repaired);
+                                    } catch (e2: any) {
+                                        const preview = rawJson.length > 300 ? rawJson.substring(0, 300) + '...' : rawJson;
+                                        throw new Error(`Invalid JSON in <lollms_tool>: ${e2?.message || e?.message}. Received: ${preview}`);
+                                    }
                                 }
                             }
                             const name = parsedCall.name || "unknown_tool";
@@ -6927,6 +7039,7 @@ The user has CONFIRMED and VALIDATED your plan.
                             leanMode: false,
                             discussionId: this.discussionId,
                             mutedFiles: this._currentDiscussion?.mutedFiles || [],
+                            includedFiles: (this._currentDiscussion as any)?.includedFiles,
                             modelName: targetModel,
                             signal: controller.signal,
                             capabilities: this._discussionCapabilities
@@ -6971,6 +7084,17 @@ The user has CONFIRMED and VALIDATED your plan.
 
                 if (turnPatchReport && typeof batchUserMsg.content === 'string') {
                     batchUserMsg.content = `${turnPatchReport}\n${batchUserMsg.content}`;
+                }
+
+                const roundsRemaining = Math.max(0, maxTurnsLimit - currentTurnIndex);
+                if (typeof batchUserMsg.content === 'string') {
+                    let roundBudgetNotice = `\n\n🔄 **Auto-Mode Round Budget**: ${roundsRemaining} of ${maxTurnsLimit} round(s) remaining (next is Round ${currentTurnIndex + 1}/${maxTurnsLimit}).`;
+                    if (roundsRemaining === 1) {
+                        roundBudgetNotice += `\n🛑 **LAST AUTO-MODE ROUND**: This is your FINAL automatic turn. Wrap up, clean up any temporary instrumentation/scratch files, deliver your final report, and ask the user if they want you to continue.`;
+                    } else if (roundsRemaining <= 3) {
+                        roundBudgetNotice += `\n⚠️ **APPROACHING ROUND LIMIT**: Prepare to conclude, clean up any temporary instrumentation/scratch files, and either emit your final summary or ask the user for more rounds if additional work is needed.`;
+                    }
+                    batchUserMsg.content += roundBudgetNotice;
                 }
 
                 const hasContextExpandingTools = discoveredActions.some(a =>
@@ -7074,10 +7198,16 @@ Keep each phase focused on a small subset (1–3 files${requestedTargetsList.len
                     ? '(<execute_code>, <unmute_files>, <load_structure>, etc.)'
                     : '(<unmute_files>, <load_structure>, <show_symbol>, etc.)';
                 loopMessages.push({ role: 'assistant', content: stripThinkingTags(turnResponse).trim() });
+                const roundsRemainingEndTag = Math.max(0, maxTurnsLimit - currentTurnIndex);
+                const endTagBudgetWarning = roundsRemainingEndTag === 1
+                    ? `\n🛑 **LAST AUTO-MODE ROUND (1/${maxTurnsLimit} remaining)**: This is your FINAL automatic turn. Deliver your final report, clean up any temporary files, and end with \`</end>\` (or ask the user for more rounds).`
+                    : (roundsRemainingEndTag <= 3
+                        ? `\n⚠️ **APPROACHING ROUND LIMIT (${roundsRemainingEndTag}/${maxTurnsLimit} remaining)**: Prepare to wrap up, clean up temporary files, and end with \`</end>\` or ask the user for more rounds.`
+                        : `\n🔄 **Auto-Mode Round Budget**: ${roundsRemainingEndTag} of ${maxTurnsLimit} round(s) remaining.`);
                 loopMessages.push({
                     role: 'user',
                     content: `${turnPatchReport ? `${turnPatchReport}\n` : ''}### ⏳ CONTINUATION REQUIRED — EXPLICIT END TAG MISSING
-"Require Explicit End Tag" is enabled and your response did not contain the completion marker.
+"Require Explicit End Tag" is enabled and your response did not contain the completion marker.${endTagBudgetWarning}
 - If work remains, continue IMMEDIATELY: use tool tags ${toolExamples} or \`<file path="..." action="write|patch|update_symbol">\` mutation tags.
 - Do NOT wait for the user to say "continue".
 - When the task is fully complete, end your final response with the tag \`</end>\` (or \`</done>\`).
@@ -7318,6 +7448,7 @@ ${phaseSigs}${phaseTargets}> 🎯 **Instructions for Implementation**:
                     leanMode: false,
                     discussionId: this.discussionId,
                     mutedFiles: this._currentDiscussion?.mutedFiles || [],
+                    includedFiles: (this._currentDiscussion as any)?.includedFiles,
                     modelName: targetModel,
                     signal: controller.signal,
                     capabilities: this._discussionCapabilities
@@ -7424,6 +7555,18 @@ ${phaseSigs}${phaseTargets}> 🎯 **Instructions for Implementation**:
         this.updateGeneratingState();
         await this.commitDiscussionFilesToGlobal();
         this.updateContextAndTokens({ isBackgroundSync: false });
+
+        if (!controller?.signal.aborted && (Date.now() - generationStartTime) >= 5000) {
+            const discTitle = this._currentDiscussion?.title || 'Discussion';
+            vscode.window.showInformationMessage(
+                `✅ Lollms: Generation complete for "${discTitle}".`,
+                'Focus Chat'
+            ).then(choice => {
+                if (choice === 'Focus Chat' && !this._isDisposed) {
+                    this._panel.reveal();
+                }
+            });
+        }
 
     } catch (error: any) { 
         ChatPanel.activeGenerations.delete(this.discussionId);
@@ -8041,7 +8184,7 @@ ${targetContent}
           initialDebugCmd = 'python -u main.py';
       }
 
-      const isFast = this._discussionCapabilities.fastMode !== false;
+      const isFast = !(this._discussionCapabilities.useLibrarian === true && this._discussionCapabilities.contextGovernorEnabled !== false);
       const isAssistant = !this._discussionCapabilities.agentMode;
 
       const commandInput = await vscode.window.showInputBox({
@@ -8563,7 +8706,7 @@ ${res.output || '(No output recorded)'}
       }
   }
 
-  public async muteFiles(paths: string[]): Promise<number> {
+  public async muteFiles(paths: string[], options?: { skipTokenUpdate?: boolean }): Promise<number> {
       if (!this._currentDiscussion || !Array.isArray(paths) || paths.length === 0) return 0;
       if (!this._currentDiscussion.mutedFiles) this._currentDiscussion.mutedFiles = [];
 
@@ -8572,7 +8715,9 @@ ${res.output || '(No output recorded)'}
       for (const rawP of paths) {
           const targetPath = String(rawP).replace(/\\/g, '/').trim();
           if (!targetPath) continue;
-          const alreadyMuted = this._currentDiscussion.mutedFiles.some(p => arePathsEqual(p, targetPath));
+          const alreadyMuted = this._currentDiscussion.mutedFiles.some(p =>
+              arePathsEqual(p, targetPath) || this.normalizePathKey(p) === this.normalizePathKey(targetPath)
+          );
           if (!alreadyMuted) {
               this._currentDiscussion.mutedFiles.push(targetPath);
               addedCount++;
@@ -8580,17 +8725,19 @@ ${res.output || '(No output recorded)'}
       }
 
       this._discussionCapabilities.mutedFiles = [...this._currentDiscussion.mutedFiles];
-      await this._discussionManager.saveLastMutedFiles(this._currentDiscussion.mutedFiles);
+      this._discussionManager.saveLastMutedFiles(this._currentDiscussion.mutedFiles).catch(() => {});
 
       if (!this._currentDiscussion.id.startsWith('temp-')) {
           await this._discussionManager.saveDiscussion(this._currentDiscussion);
       }
       this.contextStateProvider?.updateContextKeys();
-      await this.updateContextAndTokens({ isBackgroundSync: true });
+      if (!options?.skipTokenUpdate) {
+          this.updateContextAndTokens({ isBackgroundSync: true });
+      }
       return addedCount;
   }
 
-  public async unmuteFiles(paths: string[]): Promise<number> {
+  public async unmuteFiles(paths: string[], options?: { skipTokenUpdate?: boolean }): Promise<number> {
       if (!this._currentDiscussion || !Array.isArray(paths) || paths.length === 0) return 0;
       if (!this._currentDiscussion.mutedFiles) this._currentDiscussion.mutedFiles = [];
 
@@ -8599,11 +8746,13 @@ ${res.output || '(No output recorded)'}
       const initialCount = this._currentDiscussion.mutedFiles.length;
 
       this._currentDiscussion.mutedFiles = this._currentDiscussion.mutedFiles.filter(p => {
-          return !targetPaths.some((t: string) => arePathsEqual(p, t));
+          return !targetPaths.some((t: string) =>
+              arePathsEqual(p, t) || this.normalizePathKey(p) === this.normalizePathKey(t)
+          );
       });
 
       this._discussionCapabilities.mutedFiles = [...this._currentDiscussion.mutedFiles];
-      await this._discussionManager.saveLastMutedFiles(this._currentDiscussion.mutedFiles);
+      this._discussionManager.saveLastMutedFiles(this._currentDiscussion.mutedFiles).catch(() => {});
 
       // Restore full content ('included') for any files that were in definitions-only/structure mode
       if (this._contextManager) {
@@ -8630,7 +8779,9 @@ ${res.output || '(No output recorded)'}
           await this._discussionManager.saveDiscussion(this._currentDiscussion);
       }
       this.contextStateProvider?.updateContextKeys();
-      await this.updateContextAndTokens({ isBackgroundSync: false });
+      if (!options?.skipTokenUpdate) {
+          this.updateContextAndTokens({ isBackgroundSync: true });
+      }
       return removedCount;
   }
 
@@ -11314,35 +11465,32 @@ ${reportBlock}
 
             case 'toggleFileStructure':
                 if (this._currentDiscussion && message.path) {
-                    this._panel.webview.postMessage({
-                        command: 'tokenCalculationStarted',
-                        text: 'Switching structure view...'
-                    });
                     const targetPath = message.path.replace(/\\/g, '/').trim();
                     const res = await this._contextManager.resolveWorkspaceFromPath(targetPath);
                     const resolvedPath = res ? res.relativePath : targetPath;
+                    const targetKey = this.normalizePathKey(resolvedPath);
 
-                    if (!(this._currentDiscussion as any).includedFiles) {
-                        const globalIncluded = this._contextManager?.getContextStateProvider()?.getIncludedFiles() || [];
-                        (this._currentDiscussion as any).includedFiles = JSON.parse(JSON.stringify(globalIncluded));
-                    }
+                    const globalIncluded = this._contextManager?.getContextStateProvider()?.getIncludedFiles() || [];
+                    (this._currentDiscussion as any).includedFiles = this.reconcileDiscussionFiles(
+                        globalIncluded,
+                        (this._currentDiscussion as any).includedFiles
+                    );
                     const discFiles: any[] = (this._currentDiscussion as any).includedFiles;
-                    const { arePathsEqual } = require('../../utils');
 
                     const existing = discFiles.find(f => {
                         const cf = typeof f === 'string' ? f : (f.path || '');
-                        return arePathsEqual(cf, resolvedPath) || arePathsEqual(cf, targetPath);
+                        return this.normalizePathKey(cf) === targetKey;
                     });
 
                     const currentState = typeof existing === 'object' ? existing.state : 'included';
                     const newState = message.targetState || (currentState === 'definitions-only' ? 'included' : 'definitions-only');
 
-                    if (existing) {
-                        if (typeof existing === 'object') {
-                            existing.state = newState;
-                        }
+                    if (existing && typeof existing === 'object') {
+                        existing.state = newState;
+                        if (newState === 'included') delete existing.symbols;
+                        else if (newState === 'definitions-only' && !Array.isArray(existing.symbols)) existing.symbols = [];
                     } else {
-                        discFiles.push({ path: resolvedPath, state: newState });
+                        discFiles.push({ path: resolvedPath, state: newState, ...(newState === 'definitions-only' ? { symbols: [] } : {}) });
                     }
 
                     if (this._currentDiscussion.capabilities) {
@@ -11354,9 +11502,11 @@ ${reportBlock}
                         await provider.setStateForUris([res.uri], newState as any);
                     }
 
-                    // If file was muted and is now being switched to definitions-only, unmute it
+                    // If file was muted and is now being switched to definitions-only/included, unmute it
                     if (this._currentDiscussion.mutedFiles) {
-                        this._currentDiscussion.mutedFiles = this._currentDiscussion.mutedFiles.filter(m => !arePathsEqual(m, targetPath) && !arePathsEqual(m, resolvedPath));
+                        this._currentDiscussion.mutedFiles = this._currentDiscussion.mutedFiles.filter(m =>
+                            this.normalizePathKey(m) !== targetKey
+                        );
                         this._discussionCapabilities.mutedFiles = [...this._currentDiscussion.mutedFiles];
                     }
 
@@ -11364,47 +11514,45 @@ ${reportBlock}
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);
                     }
 
-                    await this.updateContextAndTokens({ isBackgroundSync: false });
-
-                    const label = newState === 'definitions-only' ? 'Structure Only (Definitions)' : 'Full Content';
-                    vscode.window.showInformationMessage(`Set "${path.basename(resolvedPath)}" to ${label}.`);
+                    this.updateContextAndTokens({ isBackgroundSync: true });
                 }
                 break;
 
             case 'bulkSetFilesStructure':
                 if (this._currentDiscussion && Array.isArray(message.paths) && message.paths.length > 0) {
-                    this._panel.webview.postMessage({
-                        command: 'tokenCalculationStarted',
-                        text: `Setting structure view for ${message.paths.length} file(s)...`
-                    });
                     const targetState = message.targetState || 'definitions-only';
-                    if (!(this._currentDiscussion as any).includedFiles) {
-                        const globalIncluded = this._contextManager?.getContextStateProvider()?.getIncludedFiles() || [];
-                        (this._currentDiscussion as any).includedFiles = JSON.parse(JSON.stringify(globalIncluded));
-                    }
-                    const discFiles: any[] = (this._currentDiscussion as any).includedFiles;
                     const provider = this._contextManager.getContextStateProvider();
+                    const globalIncluded = provider ? provider.getIncludedFiles() : [];
+                    (this._currentDiscussion as any).includedFiles = this.reconcileDiscussionFiles(
+                        globalIncluded,
+                        (this._currentDiscussion as any).includedFiles
+                    );
+                    const discFiles: any[] = (this._currentDiscussion as any).includedFiles;
                     const urisToUpdate: vscode.Uri[] = [];
-                    const { arePathsEqual } = require('../../utils');
 
                     for (const p of message.paths) {
                         const cleanP = p.replace(/\\/g, '/').trim();
                         const res = await this._contextManager.resolveWorkspaceFromPath(cleanP);
                         const resolved = res ? res.relativePath : cleanP;
+                        const targetKey = this.normalizePathKey(resolved);
 
                         const existing = discFiles.find(f => {
                             const cf = typeof f === 'string' ? f : (f.path || '');
-                            return arePathsEqual(cf, resolved) || arePathsEqual(cf, cleanP);
+                            return this.normalizePathKey(cf) === targetKey;
                         });
 
                         if (existing && typeof existing === 'object') {
                             existing.state = targetState;
+                            if (targetState === 'included') delete existing.symbols;
+                            else if (targetState === 'definitions-only' && !Array.isArray(existing.symbols)) existing.symbols = [];
                         } else if (!existing) {
-                            discFiles.push({ path: resolved, state: targetState });
+                            discFiles.push({ path: resolvedPath, state: targetState, ...(targetState === 'definitions-only' ? { symbols: [] } : {}) });
                         }
 
                         if (this._currentDiscussion.mutedFiles) {
-                            this._currentDiscussion.mutedFiles = this._currentDiscussion.mutedFiles.filter(m => !arePathsEqual(m, cleanP) && !arePathsEqual(m, resolved));
+                            this._currentDiscussion.mutedFiles = this._currentDiscussion.mutedFiles.filter(m =>
+                                this.normalizePathKey(m) !== targetKey
+                            );
                         }
 
                         if (res) {
@@ -11427,33 +11575,22 @@ ${reportBlock}
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);
                     }
 
-                    await this.updateContextAndTokens({ isBackgroundSync: false });
-                    vscode.window.showInformationMessage(`Set ${message.paths.length} file(s) to ${targetState === 'definitions-only' ? 'Structure Only' : 'Full Content'}.`);
+                    this.updateContextAndTokens({ isBackgroundSync: true });
                 }
                 break;
 
             case 'toggleMuteFile':
                 if (this._currentDiscussion && message.path) {
-                    this._panel.webview.postMessage({
-                        command: 'tokenCalculationStarted',
-                        text: 'Updating file visibility...'
-                    });
-                    const { arePathsEqual } = require('../../utils');
                     if (!this._currentDiscussion.mutedFiles) this._currentDiscussion.mutedFiles = [];
                     const targetPath = message.path.replace(/\\/g, '/').trim();
-                    const isMuted = this._currentDiscussion.mutedFiles.some(p => arePathsEqual(p, targetPath));
+                    const targetKey = this.normalizePathKey(targetPath);
+                    const isMuted = this._currentDiscussion.mutedFiles.some(p => this.normalizePathKey(p) === targetKey);
                     const shouldMute = typeof message.muted === 'boolean' ? message.muted : !isMuted;
 
                     if (!shouldMute) {
                         await this.unmuteFiles([targetPath]);
-                        vscode.window.showInformationMessage(`Reactivated "${path.basename(targetPath)}" with full content.`);
                     } else {
                         await this.muteFiles([targetPath]);
-                        vscode.window.showInformationMessage(`Deactivated "${path.basename(targetPath)}" for this discussion (Muted).`);
-                    }
-
-                    if (!this._currentDiscussion.id.startsWith('temp-')) {
-                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
                     }
                 }
                 break;
@@ -11526,15 +11663,7 @@ ${reportBlock}
             case 'bulkUnmuteFiles':
                 if (Array.isArray(message.paths)) {
                     await this.unmuteFiles(message.paths);
-                    await this._contextManager.getContextStateProvider()?.addFilesToContext(message.paths);
-                    await this.addFilesToDiscussionContext(message.paths, 'included');
                     this.recordCurrentPromptFiles(message.paths);
-                    for (const p of message.paths) {
-                        const res = await this._contextManager.resolveWorkspaceFromPath(p);
-                        if (res) this._contextManager.refreshFileInCache(res.uri);
-                    }
-                    await this.updateContextAndTokens({ isBackgroundSync: false });
-                    vscode.window.showInformationMessage(`Reactivated full content for selected file(s) for this discussion.`);
                     if (message.reprompt) {
                         this.recordPendingJustAddedFiles(message.paths);
                         await this.sendMessage({
@@ -13075,7 +13204,7 @@ ${itemizedReports.join('\n\n---\n\n')}
 
                     // OPTIMIZATION: If only mode flags (Think, Agent, AutoTools, FastMode/Librarian) changed,
                     // do not trigger a full context scan to avoid badge-flicker or blocking state sync.
-                    const isVisualOnly = partial.thinkingMode !== undefined || partial.agentMode !== undefined || partial.autoExecuteTools !== undefined || partial.fastMode !== undefined || partial.allowCodeExecution !== undefined || partial.autoExecuteCode !== undefined || partial.autoExecuteScouting !== undefined || partial.requireExplicitEndTag !== undefined;
+                    const isVisualOnly = partial.thinkingMode !== undefined || partial.agentMode !== undefined || partial.autoExecuteTools !== undefined || partial.useLibrarian !== undefined || partial.allowCodeExecution !== undefined || partial.autoExecuteCode !== undefined || partial.autoExecuteScouting !== undefined || partial.requireExplicitEndTag !== undefined;
 
                     if (!isVisualOnly) {
                         await this.updateContextAndTokens({ isBackgroundSync: false });

@@ -16,7 +16,7 @@ export interface CoderPromptOptions {
         projectName?: string;
         governorReport?: string;
     };
-    isFastMode?: boolean;
+    useLibrarian?: boolean;
     isExport?: boolean;
 }
 
@@ -56,7 +56,7 @@ export class CoderPromptBuilder {
 
         lines.push('### ⚡ COMPOSABLE AUTOMATION & EXECUTION PROTOCOL');
         if (autoApply) {
-            lines.push('- **Auto-Apply Patches (ON)**: Your `<file path="..." action="write|patch|update_symbol|delete_code">` mutations are automatically applied to disk.');
+            lines.push('- **Auto-Apply Patches (ON)**: Your `<file path="..." action="write|patch|update_symbol|delete_code">` mutations are automatically applied to disk. **Do NOT run scripts just to check if a patch was applied**—on the next turn, the updated file contents (including `update_symbol` edits) are already refreshed and visible in your `LOADED FILE CONTENTS` context.');
         }
         if (autoScouting) {
             // 🚫 HUD-AWARE SCOUTING TAGS: Only advertise tags that are actually enabled in the HUD.
@@ -91,6 +91,9 @@ export class CoderPromptBuilder {
             } else {
                 lines.push('- **Code Execution Issuing (ON — Manual Run)**: When you want the user to inspect or run a shell, Python, or Node script, emit a top-level block starting on a new line:\n  `<execute_code lang="bash|python|node">\n  [command or script]\n  </execute_code>`');
             }
+        }
+        if (autoCode || autoApply || autoScouting) {
+            lines.push('- **Cleanup Before Finishing (MANDATORY)**: Before concluding (or emitting `</end>`), remove any temporary `[LOLLMS_DEBUG]` instrumentation logs, scratch scripts (e.g. in `.lollms/scripts`), and temporary verification files you created.');
         }
         if (requireEndTag) {
             lines.push('- **Require Explicit End Tag (ON — MANDATORY)**: Do NOT stop early. Continue working across turns until the entire user request is 100% complete. Only when you are completely finished, end your final response with `</end>` (or `</done>`).');
@@ -203,7 +206,7 @@ Whenever you write-and-execute a script ONLY to test the system, verify an assum
                 persona = '',
                 capabilities,
                 context,
-                isFastMode = capabilities?.fastMode !== false,
+                useLibrarian = capabilities?.useLibrarian === true && capabilities?.contextGovernorEnabled !== false,
                 isExport = capabilities?.isExport === true
             } = options || ({} as any);
 
@@ -213,12 +216,12 @@ Whenever you write-and-execute a script ONLY to test the system, verify an assum
             const mutationProtocol = CoderPromptBuilder.buildFileMutationProtocol(capabilities);
             const scriptSandboxProtocol = CoderPromptBuilder.buildScriptSandboxProtocol();
             const formProtocol = !isExport ? ((CoderPromptBuilder as any).buildUserInputFormProtocol?.() ?? '') : '';
-            const phasedAndInstrumentationProtocol = CoderPromptBuilder.buildPhasedContextAndInstrumentationProtocol({ isExport, isFastMode });
+            const phasedAndInstrumentationProtocol = CoderPromptBuilder.buildPhasedContextAndInstrumentationProtocol({ isExport, isFastMode: !useLibrarian });
             const composableAutoProtocol = !isExport ? CoderPromptBuilder.buildComposableAutoProtocol(capabilities) : '';
             const safePersona = typeof persona === 'string' ? persona : String(persona || '');
 
-            // 1. FAST MODE CODER
-            if (isFastMode && !isExport) {
+            // 1. DIRECT CODER (LIBRARIAN INACTIVE)
+            if (!useLibrarian && !isExport) {
                 return `# 🎭 ROLE: CODER (DIRECT IMPLEMENTER)
 ${safePersona}
 ${userPrefSection}

@@ -2897,7 +2897,7 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         };
     }
 
-    const handleWizardSubmit = (sendToAi: boolean) => {
+    const handleWizardSubmit = async (sendToAi: boolean) => {
         const promptText = dom.wizardPrompt ? dom.wizardPrompt.value.trim() : '';
         const stagedImages = (window as any).wizardStagedImages || [];
 
@@ -2924,8 +2924,6 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         const profileId = dom.wizardProfile?.value || state.capabilities?.responseProfileId || 'balanced';
         const effortSelect = document.getElementById('wizard-reasoning-effort') as HTMLSelectElement | null;
         const reasoningEffort = effortSelect ? (effortSelect.value as any) : undefined;
-        const fastModeCheck = document.getElementById('wizard-fast-mode') as HTMLInputElement | null;
-        const fastMode = fastModeCheck ? fastModeCheck.checked : false;
         const prefProfileId = dom.wizardPreferencesProfile?.value || state.capabilities?.userPreferenceProfileId || 'clean_craftsman';
         const userPreferences = (document.getElementById('wizard-user-preferences') as HTMLTextAreaElement | null)?.value?.trim();
         const contextSelectEl = document.getElementById('wizard-context-selection') as HTMLSelectElement | null;
@@ -2944,6 +2942,13 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         const finalMuted = state.wizardMutedFiles !== undefined
             ? state.wizardMutedFiles
             : (state.mutedFiles || []);
+
+        const uiMod = await import('./ui.js');
+        const wizardIncludedFiles = (uiMod.wizardCandidateFiles || []).map((f: any) => ({
+            path: f.path,
+            state: f.state || 'included',
+            ...(Array.isArray(f.symbols) && f.symbols.length > 0 ? { symbols: [...f.symbols] } : {})
+        }));
 
         const wizardSkillsContainer = document.getElementById('wizard-skills-tree-container');
         const hasSkillsTree = !!(wizardSkillsContainer && wizardSkillsContainer.querySelectorAll('.skill-node').length > 0);
@@ -2973,8 +2978,8 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                     userPreferenceProfileId: prefProfileId,
                     userPreferences,
                     reasoningEffort,
-                    fastMode,
                     mutedFiles: finalMuted,
+                    includedFiles: wizardIncludedFiles,
                     importedSkills,
                     projectSkills,
                     sendToAi

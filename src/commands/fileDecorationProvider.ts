@@ -40,14 +40,11 @@ export class FileDecorationProvider implements vscode.FileDecorationProvider {
         }
 
         const state: ContextState = this.stateProvider.getStateForUri(uri);
-        const relativePath = (this.stateProvider as any).normalize?.(vscode.workspace.asRelativePath(uri, false)) || '';
-        const workspaceState = (this.stateProvider as any).getUnifiedWorkspaceState?.() || {};
-        const isExplicit = relativePath && (workspaceState[relativePath] !== undefined || workspaceState[relativePath.toLowerCase()] !== undefined);
+        //const relativePath = (this.stateProvider as any).normalize?.(vscode.workspace.asRelativePath(uri, false)) || '';
+        //const workspaceState = (this.stateProvider as any).getUnifiedWorkspaceState?.() || {};
+        // const isExplicit = relativePath && (workspaceState[relativePath] !== undefined || workspaceState[relativePath.toLowerCase()] !== undefined);
 
-        const { isDangerousOrBlocked } = require('./contextStateProvider');
-        if (!isExplicit && isDangerousOrBlocked(uri.fsPath)) {
-            return undefined;
-        }
+        // const { isDangerousOrBlocked } = require('./contextStateProvider');
 
         switch (state) {
             case 'included':

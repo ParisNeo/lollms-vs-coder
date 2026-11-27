@@ -47,8 +47,11 @@ export class ContextItem extends vscode.TreeItem {
 }
 
 export const DANGEROUS_BLOCKED_FOLDERS = new Set([
-    '.git', 'node_modules', 'venv', '.venv', 'virtualenv', 'conda-env',
-    '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox'
+    '.git', 'node_modules', 'venv', '.venv', 'env', '.env', 'virtualenv', 'conda-env',
+    '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', '.eggs',
+    'dist', 'build', 'out', 'target', 'bin', 'obj', 'debug', 'release',
+    '.next', '.nuxt', '.turbo', '.cache', '.parcel-cache', '.vite', '.sass-cache',
+    'coverage', 'htmlcov', '.idea', '.vscode'
 ]);
 
 export function isDangerousOrBlocked(fsPathOrRel: string, workspaceRoot?: string): boolean {
@@ -97,7 +100,7 @@ export function isDangerousOrBlocked(fsPathOrRel: string, workspaceRoot?: string
     const segments = target.split('/').filter(Boolean);
     for (const seg of segments) {
         const lower = seg.toLowerCase();
-        if (DANGEROUS_BLOCKED_FOLDERS.has(lower)) {
+        if (DANGEROUS_BLOCKED_FOLDERS.has(lower) || lower.endsWith('.egg-info')) {
             return true;
         }
     }
@@ -490,15 +493,17 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
     public getStateForUri(uri: vscode.Uri): ContextState {
         if (uri.scheme !== 'file') return 'tree-only';
-        if (isDangerousOrBlocked(uri.fsPath)) return 'fully-excluded';
 
         const relativePath = this.normalize(vscode.workspace.asRelativePath(uri, false));
         const workspaceState = this.getUnifiedWorkspaceState();
 
-        // 1. O(1) exact match lookup
+        // 1. O(1) exact match lookup (allows user to manually re-include default-excluded folders)
         if (workspaceState[relativePath]) {
             return workspaceState[relativePath];
         }
+
+        // 2. Default bloated/dangerous folder exclusion
+        if (isDangerousOrBlocked(uri.fsPath)) return 'fully-excluded';
 
         // 2. O(1) lookup: check if this folder prefix contains active children
         if (this._activeParentPrefixes.has(relativePath)) {
@@ -662,6 +667,19 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                     addKeyVariants(excludedMap, normalizedKey, folder);
                 }
             }
+        }
+
+        // Also register default-excluded root folders (e.g. .lollms, .pytest_cache, *.egg-info, node_modules, __pycache__)
+        // so the Explorer context menu accurately shows "✓ Exclude from AI Context"
+        for (const folder of folders) {
+            try {
+                const entries = fs.readdirSync(folder.uri.fsPath, { withFileTypes: true });
+                for (const entry of entries) {
+                    if (entry.isDirectory() && !workspaceState[entry.name] && isDangerousOrBlocked(entry.name)) {
+                        addKeyVariants(excludedMap, entry.name, folder);
+                    }
+                }
+            } catch {}
         }
 
         try {
